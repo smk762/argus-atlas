@@ -28,7 +28,8 @@ v0 bakes **one** Web Mercator canvas (long side <= 1536 px, both sides multiples
 - `jobs.py` — `JobStore`, strict job-id charset, sidecar IO, `copy_job()` for baking variants.
 - `backends/` — `base.py` (`BakeBackend` protocol, model resolver/hasher), `workflow.py` (`$placeholder` renderer), `http.py` (urllib transport incl. multipart upload), `comfyui.py` (upload controls -> `/prompt` -> poll `/history` -> `/view`). Registry in `__init__.py` (`get_backend`, `backend_from_env`).
 - `server/app.py` — FastAPI on **:8105** (peer of lens :8100 … proof :8104). `cli.py` — Typer (`doctor`, `controls`, `bake`, `tiles`, `inspect`, `serve`).
-- `templates/comfyui_sdxl_img2img_control.json` — the starter graph the operator replaces (ControlNet name/weight are hard-coded there on purpose).
+- `templates/comfyui_sdxl_img2img_control.json` — the starter graph the operator replaces (ControlNet name/weight are hard-coded there on purpose). `..._nolora.json` is the same graph without the LoraLoader for a bake before a cartography LoRA exists; `--workflow <bare packaged name>` selects a packaged template, any other value is a path.
+- `docs/first-bake.md` — the runbook for the first real bake on the GPU host (morpheus): what ComfyUI has, what to download, exact commands. `argus-atlas-handoff.md` at the root is the v0 product spec (settled decisions; do not relitigate).
 
 `tests/` builds a tiny Float32 DEM with GDAL (`conftest.dem`) and a `FakeBackend` that writes a PNG of the canvas size (or one pixel off). No GPU, no ComfyUI in CI.
 

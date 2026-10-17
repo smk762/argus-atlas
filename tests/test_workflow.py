@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from argus_atlas.backends.base import BackendError
@@ -89,3 +91,20 @@ def test_template_needing_an_unsupplied_control_is_refused() -> None:
 def test_digest_is_stable() -> None:
     assert template_digest(example_template()) == template_digest(example_template())
     assert len(template_digest(example_template())) == 64
+
+
+def test_nolora_template_bakes_without_a_lora(monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_atlas.backends import get_backend
+    from argus_atlas.backends.workflow import EXAMPLE_TEMPLATE_NOLORA
+
+    template = example_template(EXAMPLE_TEMPLATE_NOLORA)
+    assert "LoraLoader" not in {n["class_type"] for n in template.values()}
+    assert set(REQUIRED_PLACEHOLDERS) <= placeholders_used(template)
+    graph = render_workflow(template, {**VALUES, "$lora": None})
+    sampler = next(n for n in graph.values() if n["class_type"] == "KSampler")
+    assert sampler["inputs"]["model"] == ["1", 0]
+    with pytest.raises(BackendError, match="no packaged workflow template"):
+        example_template("nope.json")
+    # A bare packaged name is accepted where a path is expected (--workflow / ATLAS_WORKFLOW).
+    backend = get_backend("comfyui", workflow=Path(EXAMPLE_TEMPLATE_NOLORA), base_url="http://comfy:8188")
+    assert "LoraLoader" not in {n["class_type"] for n in backend.template.values()}  # type: ignore[attr-defined]

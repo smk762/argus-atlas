@@ -2,7 +2,7 @@
 
 Working list for taking `argus-atlas` from spec to a package people find, try, and keep. Ordered so that each phase produces something the next phase links to. Do not announce before Phase 3 exists; each community gives one first impression.
 
-Settled decisions live in `argus-atlas-handoff.md`. This file is only about getting the finished thing in front of users.
+Settled decisions are summarised in `CLAUDE.md` (What this is) and the README's "Not in v0" section; the original handoff document is not committed. This file is only about getting the finished thing in front of users.
 
 ## Phase 0: ship the thing (handoff build order)
 

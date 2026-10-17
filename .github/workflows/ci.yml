@@ -1,0 +1,70 @@
+name: CI
+
+# Standalone rather than the shared smk762/argus-ci python-ci.yml: the test
+# suite shells out to GDAL (gdalwarp, gdaldem, gdal2tiles.py), which the
+# reusable workflow has no hook to apt-install. Mirrors its lint/test/build
+# shape otherwise; ATLAS_TEST_REQUIRE_GDAL=1 turns the GDAL skips into failures
+# so a runner without gdal-bin cannot pass silently.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: ruff check
+        run: uvx ruff@0.15.16 check src/ tests/
+      - name: ruff format --check
+        run: uvx ruff@0.15.16 format --check src/ tests/
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    env:
+      ATLAS_TEST_REQUIRE_GDAL: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # hatch-vcs derives the dev version from git history
+      - name: Install GDAL (system package, incl. gdal2tiles.py)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gdal-bin python3-gdal
+          gdalinfo --version
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv venv --python ${{ matrix.python-version }}
+      - run: uv pip install -e ".[dev,server,cli,tiles]"
+      - run: uv run --no-sync pytest --tb=short -q
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 14

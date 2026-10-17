@@ -1,0 +1,22 @@
+# Managed by Copier — do not edit by hand.
+# Run `copier update` in this repo to pull template changes.
+_commit: 7481ada
+_src_path: gh:smk762/argus-pkg-template
+author: smk762
+cli_name: argus-atlas
+description: 'Bake georeferenced fantasy-map overlay tiles from real terrain: GDAL
+    controls from a DEM, restyled through a cartography LoRA, stamped back to a GeoTIFF
+    and PMTiles archive'
+dockerfile: Dockerfile
+github_owner: smk762
+has_cli: true
+has_server: true
+image_name: argus-atlas
+package_name: argus_atlas
+post_test: ''
+project_name: argus-atlas
+python_min: '3.11'
+ruff_pin: 0.15.16
+test_extras: dev,server,cli,tiles
+version_build_arg: false
+

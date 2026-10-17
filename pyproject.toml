@@ -1,0 +1,109 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "argus-atlas"
+dynamic = ["version"]
+description = "Bake georeferenced fantasy-map overlay tiles from real terrain: GDAL controls from a DEM, restyled through a cartography LoRA, stamped back to a GeoTIFF and PMTiles archive"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "smk762" }]
+# Discovery metadata. PyPI search is weak, but keywords and classifiers feed
+# libraries.io, Snyk, conda-forge grayskull, and the "similar projects" scrapers.
+keywords = [
+    "gdal",
+    "dem",
+    "hillshade",
+    "pmtiles",
+    "geotiff",
+    "web-mercator",
+    "map-tiles",
+    "cartography",
+    "fantasy-map",
+    "worldbuilding",
+    "stable-diffusion",
+    "sdxl",
+    "controlnet",
+    "lora",
+    "comfyui",
+    "img2img",
+    "georeferencing",
+    "geospatial",
+    "generative-ai",
+    "maplibre",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Environment :: GPU",
+    "Environment :: Web Environment",
+    "Framework :: FastAPI",
+    "Framework :: Pydantic :: 2",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: English",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Artistic Software",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Topic :: Scientific/Engineering :: Visualization",
+    "Typing :: Typed",
+]
+dependencies = [
+    "argus-cortex>=0.2.0",
+    "pydantic>=2.7",
+    "structlog>=24.0",
+]
+
+[project.optional-dependencies]
+server = ["fastapi>=0.110", "uvicorn>=0.27", "python-multipart>=0.0.7", "argus-cortex[server]>=0.2.0"]
+cli = ["typer>=0.12", "rich>=13.0"]
+tiles = ["pmtiles>=3.3"]
+# httpx2 backs starlette's TestClient: starlette >=1.3 deprecated the httpx path
+# and raises when neither client is installed, so testing the server needs it.
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff==0.15.16", "httpx>=0.27", "httpx2>=2.7"]
+
+[project.scripts]
+argus-atlas = "argus_atlas.cli:app"
+
+[project.urls]
+Repository = "https://github.com/smk762/argus-atlas"
+Homepage = "https://github.com/smk762/argus-atlas#readme"
+Issues = "https://github.com/smk762/argus-atlas/issues"
+Changelog = "https://github.com/smk762/argus-atlas/blob/main/CHANGELOG.md"
+Demo = "https://github.com/smk762/argus-atlas#live-demo"
+"ComfyUI workflow" = "https://github.com/smk762/argus-atlas/blob/main/src/argus_atlas/templates/comfyui_sdxl_img2img_control.json"
+"Argus suite" = "https://github.com/smk762?tab=repositories&q=argus"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/argus_atlas/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/argus_atlas"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = ["src/argus_atlas/_version.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["E501", "B008"]

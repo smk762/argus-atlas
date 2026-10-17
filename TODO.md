@@ -6,13 +6,14 @@ Settled decisions live in `argus-atlas-handoff.md`. This file is only about gett
 
 ## Phase 0: ship the thing (handoff build order)
 
-- [ ] Package skeleton, `doctor`, GDAL argv helpers, tests on a synthetic DEM
-- [ ] `controls` and the job sidecar
-- [ ] Alignment gate and `tiles` with a fake painted PNG
-- [ ] ComfyUI backend and `bake` behind `ATLAS_ALLOW_BAKE`
-- [ ] FastAPI wrapper and the 403 read-only behaviour
-- [ ] Dockerfile with `gdal-bin`
-- [x] `git init` (done 17 Oct 2026); first tag `v0.1.0a1` once `controls` works, so `hatch-vcs` can version a build
+- [x] Package skeleton, `doctor`, GDAL argv helpers, tests on a synthetic DEM
+- [x] `controls` and the job sidecar
+- [x] Alignment gate and `tiles` with a fake painted PNG
+- [x] ComfyUI backend and `bake` behind `ATLAS_ALLOW_BAKE`
+- [x] FastAPI wrapper and the 403 read-only behaviour
+- [x] Dockerfile on the osgeo/gdal 3.11.4 image, CI green with 48 tests (17 Oct 2026)
+- [x] `git init` and first push (17 Oct 2026)
+- [ ] First tag `v0.1.0a1` so `hatch-vcs` versions a build and the PyPI name is held (needs the trusted publisher registered first, Phase 2)
 - [ ] First real AOI through the alignment gate (unlocks the resume line and every phase below)
 
 ## Phase 1: first real bake becomes the hero asset
@@ -29,6 +30,7 @@ Settled decisions live in `argus-atlas-handoff.md`. This file is only about gett
 - [ ] README long description renders on PyPI: check with `python -m build && twine check dist/*`
 - [ ] Hero image at the top of the README via an absolute URL
 - [ ] Badges: PyPI version, Python versions, license, CI, and the OpenSSF or attestation badge once available
+- [x] Repo public at https://github.com/smk762/argus-atlas (17 Oct 2026)
 - [ ] Trusted Publishing: `.github/workflows/release.yml` (from `argus-pkg-template`) already publishes to TestPyPI then PyPI on `v*` tags via OIDC. Register the publisher on pypi.org and test.pypi.org (owner `smk762`, repo `argus-atlas`, workflow `release.yml`, environments `pypi` and `testpypi`) before the first tag, or the rehearsal job fails loudly.
 - [ ] Add `attestations: true` to the `publish-pypi` step in `release.yml` via the template (`copier update`) so the PyPI page shows provenance
 - [ ] `CHANGELOG.md` kept current so the Changelog project URL is never a dead link

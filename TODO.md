@@ -1,0 +1,104 @@
+# Launch and onboarding checklist
+
+Working list for taking `argus-atlas` from spec to a package people find, try, and keep. Ordered so that each phase produces something the next phase links to. Do not announce before Phase 3 exists; each community gives one first impression.
+
+Settled decisions live in `argus-atlas-handoff.md`. This file is only about getting the finished thing in front of users.
+
+## Phase 0: ship the thing (handoff build order)
+
+- [ ] Package skeleton, `doctor`, GDAL argv helpers, tests on a synthetic DEM
+- [ ] `controls` and the job sidecar
+- [ ] Alignment gate and `tiles` with a fake painted PNG
+- [ ] ComfyUI backend and `bake` behind `ATLAS_ALLOW_BAKE`
+- [ ] FastAPI wrapper and the 403 read-only behaviour
+- [ ] Dockerfile with `gdal-bin`
+- [x] `git init` (done 17 Oct 2026); first tag `v0.1.0a1` once `controls` works, so `hatch-vcs` can version a build
+- [ ] First real AOI through the alignment gate (unlocks the resume line and every phase below)
+
+## Phase 1: first real bake becomes the hero asset
+
+- [ ] Pick a recognisable AOI with strong relief and a coastline (a fjord, an island, a mountain lake). Recognisable terrain is the proof that coordinates survived.
+- [ ] Bake it. Keep the job directory as a reference fixture.
+- [ ] Export a side-by-side: hillshade on the left, fantasy on the right, same extent, same size. Save as `docs/img/hero.png` (host at an absolute URL before publishing to PyPI, since PyPI will not serve repo-relative images).
+- [ ] Record a 10-second GIF of the overlay opacity sliding from fantasy to real basemap. This is the "it lines up" moment and is the single most shareable asset.
+- [ ] Bundle a tiny public-domain sample DEM in `examples/` (SRTM or similar, under 2 MB, small enough that `controls` finishes in seconds) and make the README quick-start run against it with no edits.
+
+## Phase 2: make the PyPI page convert
+
+- [x] `pyproject.toml` classifiers, keywords, project URLs (17 Oct 2026; review before first publish)
+- [ ] README long description renders on PyPI: check with `python -m build && twine check dist/*`
+- [ ] Hero image at the top of the README via an absolute URL
+- [ ] Badges: PyPI version, Python versions, license, CI, and the OpenSSF or attestation badge once available
+- [ ] Trusted Publishing: `.github/workflows/release.yml` (from `argus-pkg-template`) already publishes to TestPyPI then PyPI on `v*` tags via OIDC. Register the publisher on pypi.org and test.pypi.org (owner `smk762`, repo `argus-atlas`, workflow `release.yml`, environments `pypi` and `testpypi`) before the first tag, or the rehearsal job fails loudly.
+- [ ] Add `attestations: true` to the `publish-pypi` step in `release.yml` via the template (`copier update`) so the PyPI page shows provenance
+- [ ] `CHANGELOG.md` kept current so the Changelog project URL is never a dead link
+- [ ] Reserve the `argus-atlas` name on PyPI with the first alpha as soon as `controls` works, so the name is held and the page exists to link to
+
+## Phase 3: a demo people can click
+
+- [ ] One baked PMTiles file on static hosting (Hetzner CX23 or the homelab, see handoff hosting note). No server process, just the file and a page.
+- [ ] A MapLibre page with the fantasy overlay on a real basemap and an opacity slider. Mobile-friendly, loads in under 3 s.
+- [ ] Demo URL goes in the README "Live demo" section and the `Demo` project URL in `pyproject.toml`
+- [ ] Demo page footer links back to PyPI and GitHub
+
+## Phase 4: onboarding paths for each audience
+
+- [ ] **Local GPU user:** README quick start, sample DEM, packaged ComfyUI workflow template, `doctor` output pasted in the README so they know what healthy looks like
+- [ ] **No GPU:** a Colab or Lightning notebook that runs `controls` and `tiles` on the sample DEM, and `bake` against a hosted ComfyUI if one is available. Link from README.
+- [ ] **ComfyUI user:** publish the packaged workflow JSON on OpenArt and comfyworkflows with a one-paragraph description and the hero image
+- [ ] **LoRA user:** Civitai article next to the cartography LoRA explaining that this package turns it into a georeferenced overlay
+- [ ] **Studio user:** `/atlas` page in `argus-studio` (handoff "Studio follow-up"), only after CLI and `/health` work
+- [ ] **ComfyUI-native user:** a standalone `georef` command that stamps and gates a PNG painted outside atlas against an existing job sidecar, so the workflow JSON can be used in ComfyUI directly and the package still owns the coordinates
+- [ ] Error messages for the three common failures (GDAL missing, ComfyUI unreachable, AOI too large for the canvas) each say what to do next
+- [ ] `argus-atlas doctor` output is copy-pasteable into an issue
+
+## Phase 5: listings (one PR each, steady long-tail traffic)
+
+- [ ] awesome-geospatial
+- [ ] awesome-gdal
+- [ ] awesome-comfyui
+- [ ] awesome-stable-diffusion
+- [ ] Protomaps docs: ask to be listed among tools that write PMTiles
+- [ ] conda-forge feedstock (GDAL users install from conda and it solves the system-dependency problem for them)
+- [ ] Hugging Face: model card for the cartography LoRA that links the package, and a Space if the no-GPU notebook can be hosted there
+
+## Phase 6: the one blog post and launch week
+
+- [ ] Write one technical post. Hook: "diffusion models lose your coordinates; here is how to get them back." Cover the sidecar, the alignment gate, a failure case where a one-pixel-off output is refused, and the PMTiles result. Link the demo and the package.
+- [ ] Publish on own site first, then syndicate to dev.to
+- [ ] Show HN, weekday morning US time, concrete title with the live map in the first line of the comment
+- [ ] Lobsters (geospatial and ai tags)
+- [ ] Same week, open the community threads in Phase 7. Do not spread the launch over a month.
+
+## Phase 7: communities, with a tailored message each
+
+Geospatial:
+- [ ] Protomaps Discord (a real downstream PMTiles user is news to them)
+- [ ] GDAL and Rasterio GitHub Discussions
+- [ ] r/gis
+- [ ] OSGeo lists if there is a FOSS4G talk to point at
+- [ ] FOSS4G or Protomaps community call talk proposal
+
+Generative:
+- [ ] r/StableDiffusion and r/comfyui, with the workflow JSON attached
+- [ ] Civitai article (Phase 4)
+
+Worldbuilding (the surprise audience; they have done this by hand in Photoshop for years):
+- [ ] r/worldbuilding
+- [ ] r/mapmaking
+- [ ] Cartographers' Guild forum
+- [ ] Azgaar Fantasy Map Generator Discord
+
+## Phase 8: measure and iterate
+
+- [ ] pypistats or pepy for download trend, checked weekly for the first month
+- [ ] GitHub traffic referrers to see which channel actually sent people
+- [ ] Count issues by failure class; fold the top one into the README or `doctor` each week
+- [ ] Ask the first five real users what they tried to bake and whether it lined up. Their AOIs become the gallery.
+
+## Do not
+
+- Announce before Phase 3. The demo link is the message.
+- Lead with the whole Argus suite. Atlas is the one with a picture.
+- Pay for promotion or post to PyPI aggregator sites or Product Hunt. The audience is too specific.
+- Put the resume line in a resume before a real AOI has passed the gate (handoff rule).

@@ -38,7 +38,13 @@ def _comfyui(workflow: Path | None = None, base_url: str | None = None, **kwargs
     from argus_atlas.backends.workflow import example_template, load_template
 
     path = config.workflow_path(workflow)
-    template = load_template(path) if path is not None else example_template()
+    if path is None:
+        template = example_template()
+    elif path.parent == Path(".") and path.suffix == ".json" and not path.exists():
+        # A bare name selects a packaged template (e.g. the no-LoRA variant).
+        template = example_template(path.name)
+    else:
+        template = load_template(path)
     return ComfyUIBackend(template, config.comfyui_url(base_url), **kwargs)  # type: ignore[arg-type]
 
 

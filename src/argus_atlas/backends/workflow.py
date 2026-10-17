@@ -29,6 +29,9 @@ from argus_atlas.backends.base import BackendError
 from argus_atlas.hashing import sha256_bytes
 
 EXAMPLE_TEMPLATE = "comfyui_sdxl_img2img_control.json"
+# Same graph without the LoraLoader, for a first bake before a cartography LoRA exists.
+EXAMPLE_TEMPLATE_NOLORA = "comfyui_sdxl_img2img_control_nolora.json"
+PACKAGED_TEMPLATES: tuple[str, ...] = (EXAMPLE_TEMPLATE, EXAMPLE_TEMPLATE_NOLORA)
 
 REQUIRED_PLACEHOLDERS: tuple[str, ...] = (
     "$checkpoint",
@@ -57,9 +60,12 @@ def load_template(path: Path) -> dict:
     return template
 
 
-def example_template() -> dict:
-    """The packaged starter graph (SDXL img2img + one ControlNet + one LoRA)."""
-    resource = importlib.resources.files("argus_atlas").joinpath("templates", EXAMPLE_TEMPLATE)
+def example_template(name: str = EXAMPLE_TEMPLATE) -> dict:
+    """A packaged starter graph: SDXL img2img + one ControlNet, with (default)
+    or without (``EXAMPLE_TEMPLATE_NOLORA``) a LoRA slot."""
+    if name not in PACKAGED_TEMPLATES:
+        raise BackendError(f"no packaged workflow template {name!r}; choose one of {', '.join(PACKAGED_TEMPLATES)}")
+    resource = importlib.resources.files("argus_atlas").joinpath("templates", name)
     return json.loads(resource.read_text(encoding="utf-8"))
 
 

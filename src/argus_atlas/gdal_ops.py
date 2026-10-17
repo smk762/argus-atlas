@@ -195,8 +195,11 @@ def to_png_argv(src: Path, dst: Path, *, scale: tuple[float, float, int, int] | 
 
 def stamp_argv(png: Path, tif: Path, grid: Grid) -> list[str]:
     """Georeference a painted PNG into a GeoTIFF from the sidecar grid."""
+    # Explicit driver: the gate writes to a ".part" temp name GDAL can't infer from.
     return [
         "gdal_translate",
+        "-of",
+        "GTiff",
         "-a_srs",
         CRS,
         "-a_ullr",

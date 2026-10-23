@@ -16,7 +16,22 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 - FastAPI server on port 8105 with read-only default, NDJSON bake stream, and DEM and land names confined to `ATLAS_DEM_DIR`.
 - Dockerfile on `ghcr.io/osgeo/gdal:ubuntu-small-3.11.4`; standalone CI that installs `gdal-bin` and runs the suite against real GDAL on a synthetic DEM.
 - README with value propositions and onboarding paths, launch checklist (`TODO.md`), PyPI discovery metadata.
+- `examples/viewer.html`: a static MapLibre page that drapes a job's `fantasy.pmtiles` on an OpenFreeMap basemap with an opacity slider and a hillshade comparison layer, loading from the API (`/jobs`, range requests on `/archive`) or a local `.pmtiles` file.
+- `scripts/fetch_civitai_lora.py`: operator helper that fetches SDXL LoRAs from Civitai into a `loras/` tree with SHA256 verification, resumable `.part` downloads and a `.civitai.json` sidecar.
+- `osm`: fetch OpenStreetMap features for a bbox from Overpass into per-layer GeoJSON (water, rivers, roads, rail, forest, urban, buildings, glaciers), with scale-aware tag rules per zoom, the raw extract kept and an `osm.json` manifest recording query, timestamp and digests.
+- `controls --layer name=path` (repeatable): burn any OGR vector file as a 0/255 mask control on the canvas grid; known layers are also painted over the hillshade into `composite.png` (water blue, forest green, roads dark …). `POST /controls` takes `layers` as names under `ATLAS_DEM_DIR`; `GET /jobs/{id}/preview/{kind}` serves any control.
+- `examples/flow.html`: the whole flow from a browser against the API — AOI from the map, `POST /osm`, `POST /controls`, the `POST /bake/stream` NDJSON frames live, `POST /tiles`, then the drape. `GET /inputs` lists the DEMs, vector files and OSM extracts under `ATLAS_DEM_DIR`; `POST /osm` (opt-in, `ATLAS_ALLOW_OSM=1`) fetches layers into `ATLAS_DEM_DIR/osm/<name>/`; `GET /health` reports `osm_allowed`.
+- Style presets (`argus_atlas.presets`): six named prompt/denoise/cfg bundles chosen from the sweeps; `bake --preset`, `argus-atlas presets`, `GET /presets`, `preset` on `POST /bake/stream` (explicit knobs win), and a preset menu in `examples/flow.html` with `?lock=1` hiding free text for a moderation-free demo.
+- Every output carries its bake payload (prompt, negative, seed, steps, cfg, denoise, preset, checkpoint and LoRA SHA256, workflow digest, job id, bbox, grid): `fantasy.png` gets an `eXIf` chunk (ImageDescription, UserComment) and a `tEXt` chunk keyed `argus-atlas`, `fantasy.tif` gets `TIFFTAG_IMAGEDESCRIPTION`/`TIFFTAG_SOFTWARE`, and `fantasy.pmtiles` metadata gets `argus_bake`. Pixels are untouched; the sidecar digest covers the file with its metadata.
+- `controls --sea-level <m>`: a `sea` mask of DEM cells at or below a level (Copernicus GLO-30 puts the sea at 0), painted as water in the composite — OSM has no ocean polygons.
+- Workflow templates may use any control as a `$<name>` placeholder; the packaged `comfyui_sdxl_img2img_composite_nolora.json` uses `$composite` as the img2img init and `$hillshade` for the ControlNet.
+- ComfyUI backend fails fast when a queued prompt disappears from both `/queue` and `/history` (ComfyUI restarted mid-bake) instead of waiting out the bake timeout.
+- `docs/first-bake.md`: the morpheus runbook, amended with the first real bake (Lake Garda, Copernicus GLO-30), LoRA, prompt, checkpoint and denoise sweeps, and contact sheets under `docs/img/`.
+
+### Fixed
+
+- The land mask burnt nothing: `gdal_rasterize -a_srs` labels but never reprojects, so a polygon in EPSG:4326 missed the EPSG:3857 canvas entirely. Vectors are now reprojected and clipped with `ogr2ogr` first, masks no longer carry a NoData/transparency flag, and the test checks pixel counts.
 
 ### Not yet
 
-- No real AOI has been through the alignment gate; nothing is published to PyPI.
+- Nothing is published to PyPI. The first real AOI (Lake Garda) passed the alignment gate on 17 Oct 2026; see `docs/first-bake.md`.

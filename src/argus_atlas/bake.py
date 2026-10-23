@@ -22,6 +22,7 @@ from argus_atlas.backends.base import BackendError, BakeBackend, BakeRequest, ha
 from argus_atlas.georef import FANTASY_PNG, FANTASY_TIF, AlignmentError, stamp
 from argus_atlas.hashing import sha256_file
 from argus_atlas.jobs import load_sidecar, save_sidecar
+from argus_atlas.metadata import bake_payload, embed_png, payload_json
 from argus_atlas.models import AtlasError, BakeParams, BakeRecord, FileRef, JobSidecar, ProgressEvent
 
 logger = structlog.get_logger()
@@ -83,12 +84,22 @@ def run_bake(
             png,
             progress=lambda msg: emit("generate", msg),
         )
+        payload = bake_payload(
+            sidecar,
+            params,
+            checkpoint=checkpoint,
+            lora=lora,
+            backend=backend.name,
+            engine_version=output.engine_version,
+            workflow_sha256=output.workflow_sha256,
+        )
+        embed_png(png, payload)  # metadata only; pixels untouched, the gate sees the same image
         image_ref = FileRef(path=png.name, sha256=sha256_file(png))
 
         emit("georeference", "stamping the sidecar geotransform and checking alignment")
         tif = job_dir / FANTASY_TIF
         try:
-            stamp(png, tif, sidecar.grid)
+            stamp(png, tif, sidecar.grid, description=payload_json(payload))
         except AlignmentError as exc:
             sidecar.bake = BakeRecord(
                 params=params,

@@ -55,7 +55,62 @@ def test_health(client: TestClient) -> None:
     body = client.get("/health").json()
     assert body["status"] == "ok" and body["service"] == "argus-atlas" and body["version"] == __version__
     assert body["read_only"] is True  # baking disabled by default
+    assert body["osm_allowed"] is False  # and so is fetching OSM from the server
     assert (body["gdal"] is None) is (not HAS_GDAL)
+
+
+def test_osm_403_when_disabled_and_inputs_lists_dem_dir(client: TestClient, roots: dict[str, Path]) -> None:
+    resp = client.post("/osm", json={"name": "x", "bbox": "10,45,10.1,45.1"})
+    assert resp.status_code == 403 and "ATLAS_ALLOW_OSM" in resp.json()["detail"]
+    (roots["dem"] / "srtm.tif").write_bytes(b"not really")
+    (roots["dem"] / "osm" / "garda").mkdir(parents=True)
+    (roots["dem"] / "osm" / "garda" / "water.geojson").write_text("{}")
+    (roots["dem"] / "osm" / "garda" / "osm.json").write_text(
+        json.dumps({"bbox": "10,45,11,46", "zoom": 11, "osm_base": "t", "layers": {"water": {"path": "water.geojson"}}})
+    )
+    (roots["dem"] / "too" / "deep" / "for" / "us").mkdir(parents=True)
+    (roots["dem"] / "too" / "deep" / "for" / "us" / "x.tif").write_bytes(b"")
+    body = client.get("/inputs").json()
+    assert body["dems"] == ["srtm.tif"]
+    assert body["vectors"] == ["osm/garda/water.geojson"]
+    assert body["osm"] == [
+        {
+            "name": "osm/garda",
+            "bbox": "10,45,11,46",
+            "zoom": 11,
+            "osm_base": "t",
+            "layers": {"water": "osm/garda/water.geojson"},
+        }
+    ]
+
+
+@requires_gdal
+def test_osm_route_writes_under_dem_dir(roots: dict[str, Path]) -> None:
+    from tests.test_osm import _OSM_XML
+
+    app = create_app(
+        jobs_dir=roots["jobs"],
+        dem_dir=roots["dem"],
+        models_dir=roots["models"],
+        allow_osm=True,
+        osm_fetcher=lambda q, u: _OSM_XML.encode(),
+    )
+    c = TestClient(app)
+    assert c.get("/health").json()["osm_allowed"] is True
+    assert c.post("/osm", json={"name": "../escape", "bbox": "10.02,45.01,10.18,45.09"}).status_code == 400
+    resp = c.post(
+        "/osm",
+        json={"name": "aoi", "bbox": "10.02,45.01,10.18,45.09", "zoom": 11, "layers": ["water", "roads", "buildings"]},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["layers"] == {"water": "osm/aoi/water.geojson", "roads": "osm/aoi/roads.geojson"} and body[
+        "skipped"
+    ] == ["buildings"]
+    assert (roots["dem"] / "osm" / "aoi" / "osm.json").is_file()
+    assert c.get("/inputs").json()["osm"][0]["name"] == "osm/aoi"
+    # baking stays refused: the guard is per-route
+    assert c.post("/bake/stream", json={"job_id": "x", "checkpoint": "c"}).status_code == 403
 
 
 def test_bake_stream_403_when_disabled_but_jobs_readable(client: TestClient, roots: dict[str, Path]) -> None:
@@ -181,3 +236,16 @@ def test_full_flow_controls_bake_tiles(roots: dict[str, Path], dem: Path, models
     archive = app.get("/jobs/flow/archive")
     assert archive.status_code == 200 and archive.content[:7] == b"PMTiles"
     assert app.get("/jobs/flow").json()["status"] == "tiled"
+    # the archive carries the bake payload, so a tileset can be ranked without its job dir
+    from pmtiles.reader import MemorySource, Reader
+
+    meta = Reader(MemorySource(archive.content)).metadata()
+    assert meta["argus_bake"]["job_id"] == "flow" and "params" in meta["argus_bake"]
+    # a preset by name fills the knobs, and a bad one is a 400
+    assert (
+        app.post(
+            "/bake/stream", json={"job_id": "flow", "checkpoint": "sd_xl_base_1.0.safetensors", "preset": "nope"}
+        ).status_code
+        == 400
+    )
+    assert app.get("/presets").json()["presets"][0]["name"]

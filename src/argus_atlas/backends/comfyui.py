@@ -19,8 +19,7 @@ import structlog
 from argus_atlas.backends.base import BackendError, BackendStatus, BakeOutput, BakeRequest, StatusSink
 from argus_atlas.backends.http import Transport, UrllibTransport
 from argus_atlas.backends.workflow import (
-    CONTROL_PLACEHOLDERS,
-    placeholders_used,
+    control_placeholders_used,
     render_workflow,
     template_digest,
 )
@@ -47,15 +46,20 @@ class ComfyUIBackend:
         poll_interval: float = 1.0,
         timeout: float = 1200.0,
         request_timeout: float = 180.0,
+        vanish_after: float = 30.0,
     ) -> None:
         # request_timeout is per HTTP call; `timeout` bounds the whole bake —
         # ComfyUI can stall for minutes while a checkpoint first loads.
+        # vanish_after: once the prompt has been absent from /history for this
+        # long, /queue is consulted; a prompt in neither place is gone for good
+        # (ComfyUI restarted or its queue was cleared), so fail then, not at `timeout`.
         self.template = workflow_template
         self.base_url = base_url
         self.transport = transport or UrllibTransport(base_url, timeout=request_timeout)
         self.client_id = client_id
         self.poll_interval = poll_interval
         self.timeout = timeout
+        self.vanish_after = vanish_after
 
     # -- doctor ------------------------------------------------------------
 
@@ -78,14 +82,14 @@ class ComfyUIBackend:
             if progress is not None:
                 progress(message)
 
-        used = placeholders_used(self.template)
         uploaded: dict[str, str] = {}
-        for kind, placeholder in CONTROL_PLACEHOLDERS.items():
-            if placeholder not in used:
-                continue
+        for kind, placeholder in sorted(control_placeholders_used(self.template).items()):
             path = request.controls.get(kind)
             if path is None or not path.is_file():
-                raise BackendError(f"workflow template uses {placeholder} but the job has no {kind} control")
+                have = ", ".join(sorted(request.controls)) or "none"
+                raise BackendError(
+                    f"workflow template uses {placeholder} but the job has no {kind} control (it has: {have})"
+                )
             uploaded[placeholder] = self._upload(path, f"{request.job_id}-{kind}.png")
             say(f"uploaded {kind} control to ComfyUI")
 
@@ -155,8 +159,9 @@ class ComfyUIBackend:
         return f"{subfolder}/{name}" if subfolder else str(name)
 
     def _await_history(self, prompt_id: str) -> dict:
-        """Poll ``/history/{prompt_id}`` until completion, error, or the bake timeout."""
+        """Poll ``/history/{prompt_id}`` until completion, error, the prompt vanishing, or the bake timeout."""
         deadline = time.monotonic() + self.timeout
+        next_queue_check = time.monotonic() + self.vanish_after
         while True:
             try:
                 history = self.transport.get_json(f"/history/{urllib.parse.quote(prompt_id)}")
@@ -173,9 +178,31 @@ class ComfyUIBackend:
                     raise BackendError(f"ComfyUI run failed: {status}")
                 if status.get("completed") is True or status.get("status_str") == "success" or entry.get("outputs"):
                     return entry
-            if time.monotonic() >= deadline:
+            now = time.monotonic()
+            if now >= deadline:
                 raise BackendError(f"ComfyUI bake did not finish within {self.timeout:.0f}s")
+            if now >= next_queue_check:
+                next_queue_check = now + self.vanish_after
+                if not self._queued(prompt_id):
+                    raise BackendError(
+                        f"ComfyUI prompt {prompt_id} is in neither the queue nor the history — "
+                        "ComfyUI restarted or its queue was cleared mid-bake; rerun"
+                    )
             time.sleep(self.poll_interval)
+
+    def _queued(self, prompt_id: str) -> bool:
+        """Whether ``/queue`` still lists *prompt_id* (running or pending); ``True`` if the queue can't be read."""
+        try:
+            queue = self.transport.get_json("/queue")
+        except BackendError as exc:
+            logger.debug("comfyui.queue_unreadable", prompt_id=prompt_id, error=str(exc))
+            return True
+        for key in ("queue_running", "queue_pending"):
+            for item in queue.get(key) or []:
+                # each item is [number, prompt_id, prompt, extra_data, outputs_to_execute]
+                if isinstance(item, (list, tuple)) and len(item) > 1 and item[1] == prompt_id:
+                    return True
+        return False
 
     def _first_image(self, entry: dict, prompt_id: str) -> bytes:
         for node_output in entry.get("outputs", {}).values():

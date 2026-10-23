@@ -21,6 +21,8 @@ ENV_COMFYUI_URL = "COMFYUI_BASE_URL"
 ENV_MODELS_DIR = "ATLAS_MODELS_DIR"
 ENV_WORKFLOW = "ATLAS_WORKFLOW"
 ENV_CORS_ORIGINS = "ATLAS_CORS_ORIGINS"
+ENV_ALLOW_OSM = "ATLAS_ALLOW_OSM"
+ENV_OVERPASS_URL = "ATLAS_OVERPASS_URL"
 
 DEFAULT_JOBS_DIR = "/data/out/atlas"
 DEFAULT_DEM_DIR = "/data/dem"
@@ -87,6 +89,20 @@ def bake_allowed(override: bool | None = None) -> bool:
     if override is not None:
         return override
     return os.environ.get(ENV_ALLOW_BAKE, "").strip().lower() in _TRUTHY
+
+
+def osm_allowed(override: bool | None = None) -> bool:
+    """``POST /osm`` (the server fetching from Overpass) is OFF unless ``ATLAS_ALLOW_OSM``
+    is truthy — same opt-in posture as baking; the CLI ``osm`` command needs no flag."""
+    if override is not None:
+        return override
+    return os.environ.get(ENV_ALLOW_OSM, "").strip().lower() in _TRUTHY
+
+
+def overpass_url(override: str | None = None) -> str:
+    from argus_atlas.osm import DEFAULT_OVERPASS_URL
+
+    return override or os.environ.get(ENV_OVERPASS_URL) or DEFAULT_OVERPASS_URL
 
 
 def resolve_under_root(root: Path, candidate: str, label: str = "path") -> Path:

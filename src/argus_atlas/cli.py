@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import secrets
 import sys
 from pathlib import Path
@@ -24,12 +25,7 @@ except ImportError as _exc:  # pragma: no cover
 
 from argus_atlas import config
 from argus_atlas.models import (
-    DEFAULT_CFG,
-    DEFAULT_DENOISE,
     DEFAULT_LORA_WEIGHT,
-    DEFAULT_NEGATIVE,
-    DEFAULT_PROMPT,
-    DEFAULT_STEPS,
     AtlasError,
     BakeParams,
     BBox,
@@ -80,7 +76,12 @@ def doctor(json_out: bool = Option(False, "--json", help="Machine-readable repor
     except (BackendError, AtlasError) as exc:
         backend = {"name": config.backend_name(), "reachable": False, "version": None, "detail": str(exc)}
     report = {
-        "gdal": {"version": gdal_ops.gdal_version(), "tools": gdal_ops.gdal_tools(), "tiler": gdal_ops.find_tiler()},
+        "gdal": {
+            "version": gdal_ops.gdal_version(),
+            "tools": gdal_ops.gdal_tools(),
+            "tiler": gdal_ops.find_tiler(),
+            "calc": gdal_ops.find_calc(),
+        },
         "pmtiles": packer_status(),
         "backend": backend,
         "bake_allowed": config.bake_allowed(),
@@ -97,6 +98,9 @@ def doctor(json_out: bool = Option(False, "--json", help="Machine-readable repor
         for name, path in g["tools"].items():
             typer.echo(f"  {name:<16}{path or 'missing'}")
         typer.echo(f"  tiler           {g['tiler'] or 'missing (gdal2tiles.py: python3-gdal / gdal-python-tools)'}")
+        typer.echo(
+            f"  calc            {g['calc'] or 'missing (gdal_calc.py: python3-gdal / gdal-python-tools; no composite)'}"
+        )
         pm = report["pmtiles"]
         typer.echo(
             f"pmtiles:     library={pm['library'] or 'missing (pip install argus-atlas[tiles])'} cli={pm['cli'] or 'absent'}"
@@ -120,18 +124,44 @@ def controls(
     dem: Path = Option(..., "--dem", help="Source DEM GeoTIFF (local path)"),
     bbox: str = Option(..., "--bbox", help="AOI as west,south,east,north in EPSG:4326 degrees"),
     out: Path = Option(..., "--out", "-o", help="Job directory to create (its name is the job id)"),
-    land: Path | None = Option(None, "--land", help="Land polygon file (any OGR format) for an optional land mask"),
+    land: Path | None = Option(None, "--land", help="Land polygon file (any OGR format): the layer named 'land'"),
+    layer: list[str] = Option(
+        [],
+        "--layer",
+        help="name=path: burn any OGR vector file as a 0/255 mask control (repeatable); "
+        "water/rivers/roads/rail/forest/urban/buildings/glaciers also paint the composite",
+    ),
+    sea_level: float | None = Option(
+        None, "--sea-level", help="Metres: add a 'sea' mask of DEM cells at or below this (0 for Copernicus coasts)"
+    ),
+    composite: bool = Option(True, "--composite/--no-composite", help="Paint composite.png from the known layers"),
     long_side: int | None = Option(
         None, "--long-side", help="Canvas long side in px (default 1024, cap 1536, multiple of 64)"
     ),
     resolution: float | None = Option(None, "--resolution", help="Explicit metres per pixel instead of --long-side"),
 ) -> None:
-    """Warp the DEM to EPSG:3857, write hillshade/slope(/land) controls and job.json. No GPU."""
+    """Warp the DEM to EPSG:3857, write hillshade/slope(/layers/composite) controls and job.json. No GPU."""
     from argus_atlas.controls import build_controls
 
     try:
+        layers: dict[str, Path] = {}
+        for item in layer:
+            name, sep, path = item.partition("=")
+            if not sep or not name or not path:
+                raise AtlasError(f"--layer expects name=path, got {item!r}")
+            layers[name] = Path(path)
         aoi = BBox.parse(bbox)
-        sidecar = build_controls(dem, aoi, out, land=land, long_side=long_side, resolution=resolution)
+        sidecar = build_controls(
+            dem,
+            aoi,
+            out,
+            land=land,
+            layers=layers,
+            sea_level=sea_level,
+            composite=composite,
+            long_side=long_side,
+            resolution=resolution,
+        )
     except AtlasError as exc:
         _fail(str(exc), EXIT_INPUT)
         return
@@ -145,18 +175,65 @@ def controls(
 
 
 @app.command()
+def osm(
+    bbox: str = Option(..., "--bbox", help="AOI as west,south,east,north in EPSG:4326 degrees"),
+    out: Path = Option(..., "--out", "-o", help="Directory for extract.osm, <layer>.geojson and osm.json"),
+    layers: str = Option("water,roads,forest,urban", "--layers", help="Comma-separated OSM layer presets"),
+    zoom: int = Option(11, "--zoom", "-z", min=0, max=19, help="Target zoom (the job's native zoom) for scale rules"),
+    overpass_url: str = Option(None, "--overpass-url", help="Overpass endpoint (default $ATLAS_OVERPASS_URL)"),
+) -> None:
+    """Fetch OSM features for an AOI from Overpass into per-layer GeoJSON for `controls --layer`. Needs the network."""
+    from argus_atlas.osm import DEFAULT_OVERPASS_URL, LAYER_PRESETS, fetch_osm
+
+    names = [n.strip() for n in layers.split(",") if n.strip()]
+    unknown = [n for n in names if n not in LAYER_PRESETS]
+    if unknown:
+        _fail(f"unknown OSM layer(s) {', '.join(unknown)}; choose from {', '.join(LAYER_PRESETS)}", EXIT_INPUT)
+    url = overpass_url or os.environ.get("ATLAS_OVERPASS_URL") or DEFAULT_OVERPASS_URL
+    try:
+        manifest = fetch_osm(BBox.parse(bbox), out, names, zoom, url=url)
+    except AtlasError as exc:
+        _fail(str(exc), EXIT_INPUT)
+        return
+    typer.echo(f"{out}: {manifest['extract']['bytes'] / 1e6:.1f} MB extract, osm_base {manifest['osm_base']}")
+    for name, ref in manifest["layers"].items():
+        typer.echo(f"  --layer {name}={out / ref['path']}")
+    for name in manifest["skipped"]:
+        typer.echo(f"  {name}: skipped (empty at zoom {zoom})")
+
+
+@app.command()
+def presets(json_out: bool = Option(False, "--json", help="Machine-readable")) -> None:
+    """List the style presets `bake --preset` accepts."""
+    from argus_atlas.presets import PRESETS
+
+    if json_out:
+        typer.echo(json.dumps({n: p.as_dict() for n, p in PRESETS.items()}, indent=2))
+        return
+    for p in sorted(PRESETS.values(), key=lambda x: not x.recommended):
+        star = "*" if p.recommended else " "
+        typer.echo(
+            f"{star}{p.name:<10} {p.title:<18} denoise {p.denoise:<5} cfg {p.cfg:<4} steps {p.steps:<3} {p.blurb}"
+        )
+        typer.echo(f"{'':<11} {p.prompt}")
+
+
+@app.command()
 def bake(
     job: Path = Argument(..., help="Job directory written by `controls`"),
     checkpoint: str = Option(..., "--checkpoint", "-c", help="Base checkpoint, named as ComfyUI loads it"),
     lora: str | None = Option(None, "--lora", help="Cartography LoRA, named as ComfyUI loads it"),
     lora_weight: float = Option(DEFAULT_LORA_WEIGHT, "--lora-weight"),
     out: Path | None = Option(None, "--out", "-o", help="Bake into this job dir instead (controls are copied there)"),
-    prompt: str = Option(DEFAULT_PROMPT, "--prompt"),
-    negative: str = Option(DEFAULT_NEGATIVE, "--negative"),
+    preset: str | None = Option(
+        None, "--preset", help="Style preset (see `argus-atlas presets`); explicit flags override"
+    ),
+    prompt: str | None = Option(None, "--prompt"),
+    negative: str | None = Option(None, "--negative"),
     seed: int | None = Option(None, "--seed", help="Random if omitted"),
-    steps: int = Option(DEFAULT_STEPS, "--steps", min=1),
-    cfg: float = Option(DEFAULT_CFG, "--cfg"),
-    denoise: float = Option(DEFAULT_DENOISE, "--denoise", min=0.0, max=1.0, help="img2img strength"),
+    steps: int | None = Option(None, "--steps", min=1),
+    cfg: float | None = Option(None, "--cfg"),
+    denoise: float | None = Option(None, "--denoise", min=0.0, max=1.0, help="img2img strength"),
     models_dir: Path | None = Option(
         None, "--models-dir", help="Where checkpoints/LoRAs are hashed from (default $ATLAS_MODELS_DIR)"
     ),
@@ -179,16 +256,14 @@ def bake(
         if out is not None and out.resolve() != job_dir.resolve():
             copy_job(job_dir, out)
             job_dir = out
+        from argus_atlas.presets import resolve_params
+
         params = BakeParams(
             checkpoint=checkpoint,
             lora=lora,
             lora_weight=lora_weight,
-            prompt=prompt,
-            negative=negative,
             seed=seed if seed is not None else secrets.randbelow(2**32),
-            steps=steps,
-            cfg=cfg,
-            denoise=denoise,
+            **resolve_params(preset, prompt=prompt, negative=negative, denoise=denoise, cfg=cfg, steps=steps),
         )
         backend = backend_from_env(workflow=workflow, base_url=comfyui_url)
         sidecar = run_bake(
@@ -219,7 +294,7 @@ def tiles(
     from argus_atlas import gdal_ops
     from argus_atlas.georef import FANTASY_TIF, AlignmentError, verify_alignment
     from argus_atlas.jobs import load_sidecar, save_sidecar
-    from argus_atlas.tiles import FANTASY_PMTILES, build_tiles
+    from argus_atlas.tiles import FANTASY_PMTILES, bake_metadata, build_tiles
 
     job_dir = _job_dir_of(source)
     try:
@@ -243,6 +318,7 @@ def tiles(
             native_zoom=sidecar.native_zoom,
             name=sidecar.job_id,
             work_dir=job_dir,
+            extra_metadata=bake_metadata(sidecar),
         )
     except AlignmentError as exc:
         _fail(f"alignment gate failed, no tiles written: {exc}", 1)

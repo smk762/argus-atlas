@@ -58,7 +58,7 @@ Any OGR-readable file works as a layer, in any CRS; a name outside the palette i
 
 ## Live demo
 
-A hosted demo will be linked here. Until then, [`examples/flow.html`](examples/flow.html) runs the whole flow against a local server (AOI, OSM layers, controls, bake, tiles, drape) and [`examples/viewer.html`](examples/viewer.html) drapes any baked job on a MapLibre basemap with an opacity slider: start `argus-atlas serve --cors` (with `ATLAS_CORS_ORIGINS='*'`) and open the page, or feed it a `fantasy.pmtiles` directly. The first real AOI (Lake Garda, Copernicus GLO-30, Juggernaut XL, no LoRA) passed the alignment gate on 17 Oct 2026; the commands are in [`docs/first-bake.md`](docs/first-bake.md).
+A hosted demo will be linked here. Until then, [`examples/flow.html`](https://github.com/smk762/argus-atlas/blob/main/examples/flow.html) runs the whole flow against a local server (AOI, OSM layers, controls, bake, tiles, drape) and [`examples/viewer.html`](https://github.com/smk762/argus-atlas/blob/main/examples/viewer.html) drapes any baked job on a MapLibre basemap with an opacity slider: start `argus-atlas serve --cors` (with `ATLAS_CORS_ORIGINS='*'`) and open the page, or feed it a `fantasy.pmtiles` directly. The first real AOI (Lake Garda, Copernicus GLO-30, Juggernaut XL, no LoRA) passed the alignment gate on 17 Oct 2026; the commands are in [`docs/first-bake.md`](https://github.com/smk762/argus-atlas/blob/main/docs/first-bake.md).
 
 ## Quick start
 
@@ -71,12 +71,12 @@ argus-atlas doctor
 
 Healthy `doctor` output names a GDAL version, lists `gdalwarp`, `gdaldem`, `gdal_rasterize`, `gdal_translate`, `gdalinfo` and the tiler it found, reports whether ComfyUI is reachable and whether baking is allowed, and says whether the Go `pmtiles` CLI is on `PATH` (informational only; packing uses the Python library). If GDAL is missing it says so and exits non-zero. Paste this output into any issue you open.
 
-Then run the no-GPU half of the pipeline on the bundled sample DEM:
+Then run the no-GPU half of the pipeline on the bundled sample DEM (`examples/sample_dem.tif`, southern Lake Garda from Copernicus GLO-30, 577x577 cells, 350 KB; in the source checkout or the sdist, not the wheel):
 
 ```bash
 argus-atlas controls \
   --dem examples/sample_dem.tif \
-  --bbox west,south,east,north \
+  --bbox 10.60,45.44,10.76,45.60 \
   --out ./jobs/sample
 
 argus-atlas inspect ./jobs/sample       # sidecar: geotransform, canvas size, SHA256s, GDAL argv

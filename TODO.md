@@ -14,26 +14,26 @@ Settled decisions are summarised in `CLAUDE.md` (What this is) and the README's 
 - [x] Dockerfile on the osgeo/gdal 3.11.4 image, CI green with 48 tests (17 Oct 2026)
 - [x] `git init` and first push (17 Oct 2026)
 - [ ] First tag `v0.1.0a1` so `hatch-vcs` versions a build and the PyPI name is held (needs the trusted publisher registered first, Phase 2)
-- [ ] First real AOI through the alignment gate (unlocks the resume line and every phase below)
+- [x] First real AOI through the alignment gate (Lake Garda, 17 Oct 2026)
 
 ## Phase 1: first real bake becomes the hero asset
 
-- [ ] Pick a recognisable AOI with strong relief and a coastline (a fjord, an island, a mountain lake). Recognisable terrain is the proof that coordinates survived.
-- [ ] Bake it. Keep the job directory as a reference fixture.
+- [x] Pick a recognisable AOI with strong relief and a coastline (Lake Garda; then Rockingham, Rottnest, Albany, Stirling Range, 23 Oct 2026)
+- [x] Bake it. Job dirs kept under `/home/smk/argus/atlas-jobs` on morpheus; contact sheets in `docs/img/`
 - [ ] Export a side-by-side: hillshade on the left, fantasy on the right, same extent, same size. Save as `docs/img/hero.png` (host at an absolute URL before publishing to PyPI, since PyPI will not serve repo-relative images).
 - [ ] Record a 10-second GIF of the overlay opacity sliding from fantasy to real basemap. This is the "it lines up" moment and is the single most shareable asset.
-- [ ] Bundle a tiny public-domain sample DEM in `examples/` (SRTM or similar, under 2 MB, small enough that `controls` finishes in seconds) and make the README quick-start run against it with no edits.
+- [x] Bundle a tiny sample DEM in `examples/` (`sample_dem.tif`, Copernicus GLO-30 clip, 350 KB, attributed) and make the README quick-start run against it with no edits (23 Oct 2026)
 
 ## Phase 2: make the PyPI page convert
 
 - [x] `pyproject.toml` classifiers, keywords, project URLs (17 Oct 2026; review before first publish)
-- [ ] README long description renders on PyPI: check with `python -m build && twine check dist/*`
+- [x] README long description renders on PyPI: `twine check` passes for sdist and wheel; repo-relative links made absolute (23 Oct 2026)
 - [ ] Hero image at the top of the README via an absolute URL
 - [ ] Badges: PyPI version, Python versions, license, CI, and the OpenSSF or attestation badge once available
 - [x] Repo public at https://github.com/smk762/argus-atlas (17 Oct 2026)
 - [ ] Trusted Publishing: `.github/workflows/release.yml` (from `argus-pkg-template`) already publishes to TestPyPI then PyPI on `v*` tags via OIDC. Register the publisher on pypi.org and test.pypi.org (owner `smk762`, repo `argus-atlas`, workflow `release.yml`, environments `pypi` and `testpypi`) before the first tag, or the rehearsal job fails loudly.
-- [ ] Add `attestations: true` to the `publish-pypi` step in `release.yml` via the template (`copier update`) so the PyPI page shows provenance
-- [ ] `CHANGELOG.md` kept current so the Changelog project URL is never a dead link
+- [x] `attestations: true` on the `publish-pypi` step (23 Oct 2026; also push it upstream to `argus-pkg-template`)
+- [x] `CHANGELOG.md` kept current so the Changelog project URL is never a dead link
 - [ ] Reserve the `argus-atlas` name on PyPI with the first alpha as soon as `controls` works, so the name is held and the page exists to link to
 
 ## Phase 3: a demo people can click

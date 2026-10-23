@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atlas Overlay Viewer</title>
+<!--
+  Drape a baked argus-atlas job on a real basemap and slide the opacity: if the
+  coastline and the ridges line up, the alignment gate did its job.
+
+  Two ways to load a job, no build step:
+    * from a running atlas server (default http://localhost:8105; start it with
+      `argus-atlas serve --cors` and ATLAS_CORS_ORIGINS=* when opening this page
+      from file://) — picks the job from GET /jobs, streams fantasy.pmtiles by
+      HTTP range requests, and can show the hillshade control for comparison;
+    * from a local fantasy.pmtiles via the file picker (no server at all).
+
+  Basemap: OpenFreeMap "liberty" (OpenMapTiles data, no key). Libraries pinned
+  from public CDNs; everything else is inline.
+-->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.js"></script>
+<script src="https://unpkg.com/pmtiles@3.0.7/dist/pmtiles.js"></script>
+<style>
+  :root {
+    --bg: #f6f2e9; --fg: #1f1b16; --muted: #6b655c; --line: #d9d2c4; --accent: #8a5a2b; --panel: rgba(255,252,246,.95);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #17150f; --fg: #ebe5d8; --muted: #a39c8e; --line: #3a362c; --accent: #d9a05b; --panel: rgba(28,26,20,.94);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #17150f; --fg: #ebe5d8; --muted: #a39c8e; --line: #3a362c; --accent: #d9a05b; --panel: rgba(28,26,20,.94);
+  }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, sans-serif; }
+  #map { position: absolute; inset: 0; }
+  #panel {
+    position: absolute; top: 12px; left: 12px; z-index: 2; width: min(340px, calc(100vw - 24px));
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px;
+    box-shadow: 0 2px 10px rgba(0,0,0,.15); box-sizing: border-box;
+  }
+  h1 { font-size: 15px; margin: 0 0 8px; }
+  label { display: block; margin: 8px 0 2px; color: var(--muted); font-size: 12px; }
+  input[type=text], select { width: 100%; box-sizing: border-box; padding: 5px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--fg); }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .row { display: flex; gap: 8px; align-items: end; }
+  .row > * { flex: 1; }
+  button { padding: 5px 10px; border: 1px solid var(--accent); border-radius: 4px; background: var(--accent); color: #fff; cursor: pointer; flex: 0 0 auto; }
+  button.secondary { background: transparent; color: var(--accent); }
+  .toggles { display: flex; gap: 14px; margin-top: 8px; flex-wrap: wrap; }
+  .toggles label { display: inline-flex; gap: 4px; align-items: center; margin: 0; color: var(--fg); font-size: 13px; }
+  #status { margin-top: 8px; font-size: 12px; color: var(--muted); min-height: 1.4em; white-space: pre-wrap; }
+  #status.err { color: #b4321f; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .hint { font-size: 12px; color: var(--muted); margin: 4px 0 0; }
+  kbd { border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; font-size: 11px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <h1>Atlas overlay viewer</h1>
+
+  <label for="server">Atlas server</label>
+  <div class="row">
+    <input id="server" type="text" value="http://localhost:8105" spellcheck="false">
+    <button id="connect" type="button">Jobs</button>
+  </div>
+
+  <label for="job">Job</label>
+  <div class="row">
+    <select id="job" disabled><option value="">— connect first —</option></select>
+    <button id="load" type="button" disabled>Load</button>
+  </div>
+
+  <details>
+    <summary>…or open a local fantasy.pmtiles</summary>
+    <input id="file" type="file" accept=".pmtiles" style="margin-top:6px; width:100%">
+    <p class="hint">No server needed; the hillshade comparison is only available via the server.</p>
+  </details>
+
+  <label for="opacity">Overlay opacity <span id="opval">80%</span></label>
+  <input id="opacity" type="range" min="0" max="100" value="80" disabled>
+
+  <div class="toggles">
+    <label><input id="show-fantasy" type="checkbox" checked disabled> painted map</label>
+    <label><input id="show-hillshade" type="checkbox" disabled> hillshade control</label>
+  </div>
+  <p class="hint">Hold <kbd>space</kbd> to peek at the basemap.</p>
+
+  <div id="status">Connect to a server or open a .pmtiles file.</div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const status = (msg, err) => { const s = $("status"); s.textContent = msg; s.classList.toggle("err", !!err); };
+
+  // ---- Web Mercator helpers (mirror argus_atlas.mercator) ----
+  const R = 6378137.0;
+  const toLonLat = (x, y) => [
+    (x / R) * 180 / Math.PI,
+    (2 * Math.atan(Math.exp(y / R)) - Math.PI / 2) * 180 / Math.PI,
+  ];
+
+  // ---- PMTiles over a local File (range reads via Blob.slice) ----
+  class FileSource {
+    constructor(file) { this.file = file; }
+    getKey() { return "file:" + this.file.name + ":" + this.file.size; }
+    async getBytes(offset, length) {
+      const data = await this.file.slice(offset, offset + length).arrayBuffer();
+      return { data };
+    }
+  }
+
+  const protocol = new pmtiles.Protocol();
+  maplibregl.addProtocol("pmtiles", protocol.tile);
+
+  const map = new maplibregl.Map({
+    container: "map",
+    style: "https://tiles.openfreemap.org/styles/liberty",
+    center: [10.75, 45.65],
+    zoom: 9,
+    attributionControl: { compact: true },
+  });
+  map.addControl(new maplibregl.NavigationControl(), "top-right");
+  map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
+
+  const FANTASY = "atlas-fantasy", HILLSHADE = "atlas-hillshade";
+  let ready = false, peeking = false;
+  map.on("load", () => { ready = true; });
+
+  function removeLayer(id) {
+    if (map.getLayer(id)) map.removeLayer(id);
+    if (map.getSource(id)) map.removeSource(id);
+  }
+
+  function applyOpacity() {
+    const v = peeking ? 0 : Number($("opacity").value) / 100;
+    $("opval").textContent = $("opacity").value + "%";
+    if (map.getLayer(FANTASY)) {
+      map.setPaintProperty(FANTASY, "raster-opacity", $("show-fantasy").checked ? v : 0);
+    }
+    if (map.getLayer(HILLSHADE)) {
+      map.setPaintProperty(HILLSHADE, "raster-opacity", $("show-hillshade").checked ? v : 0);
+    }
+  }
+
+  // Insert overlays under the basemap's labels so place names stay readable.
+  function firstSymbolLayer() {
+    const layer = map.getStyle().layers.find((l) => l.type === "symbol");
+    return layer ? layer.id : undefined;
+  }
+
+  async function showArchive(source, name) {
+    if (!ready) await new Promise((r) => map.once("load", r));
+    const archive = new pmtiles.PMTiles(source);
+    protocol.add(archive);
+    const header = await archive.getHeader();
+    removeLayer(FANTASY);
+    map.addSource(FANTASY, {
+      type: "raster",
+      url: "pmtiles://" + archive.source.getKey(),
+      tileSize: 256,
+      attribution: "argus-atlas overlay",
+    });
+    map.addLayer(
+      { id: FANTASY, type: "raster", source: FANTASY, paint: { "raster-opacity": 0, "raster-fade-duration": 0 } },
+      firstSymbolLayer(),
+    );
+    map.fitBounds([[header.minLon, header.minLat], [header.maxLon, header.maxLat]], { padding: 24, duration: 600 });
+    for (const id of ["opacity", "show-fantasy"]) $(id).disabled = false;
+    applyOpacity();
+    status(`${name}: zoom ${header.minZoom}–${header.maxZoom}, ` +
+      `${header.minLon.toFixed(3)},${header.minLat.toFixed(3)} → ${header.maxLon.toFixed(3)},${header.maxLat.toFixed(3)}`);
+    return header;
+  }
+
+  function showHillshade(base, jobId, grid) {
+    removeLayer(HILLSHADE);
+    const [w, n] = toLonLat(grid.ulx, grid.uly);
+    const [e, s] = toLonLat(grid.ulx + grid.width * grid.pixel_width, grid.uly + grid.height * grid.pixel_height);
+    map.addSource(HILLSHADE, {
+      type: "image",
+      url: `${base}/jobs/${encodeURIComponent(jobId)}/preview/hillshade`,
+      coordinates: [[w, n], [e, n], [e, s], [w, s]],
+    });
+    map.addLayer(
+      { id: HILLSHADE, type: "raster", source: HILLSHADE, paint: { "raster-opacity": 0, "raster-fade-duration": 0 } },
+      map.getLayer(FANTASY) ? FANTASY : firstSymbolLayer(),
+    );
+    $("show-hillshade").disabled = false;
+    applyOpacity();
+  }
+
+  const serverBase = () => $("server").value.trim().replace(/\/+$/, "");
+
+  async function connect() {
+    const base = serverBase();
+    status("Listing jobs…");
+    try {
+      const res = await fetch(base + "/jobs");
+      if (!res.ok) throw new Error(`GET /jobs → ${res.status}`);
+      const { jobs } = await res.json();
+      const sel = $("job");
+      sel.innerHTML = "";
+      const tiled = jobs.filter((j) => j.has_archive);
+      if (!tiled.length) {
+        sel.innerHTML = '<option value="">— no tiled jobs —</option>';
+        sel.disabled = true; $("load").disabled = true;
+        status(`${jobs.length} job(s), none with a PMTiles archive yet. Run \`argus-atlas tiles <job>\`.`);
+        return;
+      }
+      for (const j of tiled) {
+        const o = document.createElement("option");
+        o.value = j.job_id;
+        o.textContent = `${j.job_id} — ${j.width}×${j.height}px, z${j.native_zoom}, ${j.created_at.slice(0, 16)}`;
+        sel.appendChild(o);
+      }
+      sel.disabled = false; $("load").disabled = false;
+      status(`${tiled.length} tiled job(s). Pick one and Load.`);
+    } catch (err) {
+      status(`Cannot reach ${base}: ${err.message}\nStart it with ATLAS_CORS_ORIGINS=* argus-atlas serve --cors`, true);
+    }
+  }
+
+  async function loadJob() {
+    const base = serverBase(), jobId = $("job").value;
+    if (!jobId) return;
+    status(`Loading ${jobId}…`);
+    try {
+      const res = await fetch(`${base}/jobs/${encodeURIComponent(jobId)}`);
+      if (!res.ok) throw new Error(`GET /jobs/${jobId} → ${res.status}`);
+      const { sidecar } = await res.json();
+      await showArchive(`${base}/jobs/${encodeURIComponent(jobId)}/archive`, jobId);
+      showHillshade(base, jobId, sidecar.grid);
+      const b = sidecar.bake;
+      if (b) status($("status").textContent + `\n${b.checkpoint.name.split("/").pop()}` +
+        (b.lora ? ` + ${b.lora.name.split("/").pop()}` : "") + `, seed ${b.params.seed}, aligned=${b.aligned}`);
+    } catch (err) {
+      status(`Load failed: ${err.message}`, true);
+    }
+  }
+
+  async function loadFile(file) {
+    if (!file) return;
+    status(`Opening ${file.name}…`);
+    try {
+      removeLayer(HILLSHADE);
+      $("show-hillshade").disabled = true; $("show-hillshade").checked = false;
+      await showArchive(new FileSource(file), file.name);
+    } catch (err) {
+      status(`Cannot open ${file.name}: ${err.message}`, true);
+    }
+  }
+
+  $("connect").addEventListener("click", connect);
+  $("load").addEventListener("click", loadJob);
+  $("job").addEventListener("change", loadJob);
+  $("file").addEventListener("change", (e) => loadFile(e.target.files[0]));
+  $("opacity").addEventListener("input", applyOpacity);
+  $("show-fantasy").addEventListener("change", applyOpacity);
+  $("show-hillshade").addEventListener("change", applyOpacity);
+  window.addEventListener("keydown", (e) => {
+    if (e.code === "Space" && !e.repeat && e.target.tagName !== "INPUT") { peeking = true; applyOpacity(); e.preventDefault(); }
+  });
+  window.addEventListener("keyup", (e) => {
+    if (e.code === "Space") { peeking = false; applyOpacity(); }
+  });
+
+  // ?server=...&job=... preloads a job; ?server alone lists jobs.
+  const q = new URLSearchParams(location.search);
+  if (q.get("server")) $("server").value = q.get("server");
+  if (q.get("job")) {
+    connect().then(() => { $("job").value = q.get("job"); if ($("job").value) loadJob(); });
+  }
+})();
+</script>
+</body>
+</html>

@@ -59,7 +59,7 @@ argus-atlas controls --dem dem.tif --bbox 10.55,45.40,10.95,45.90 --out jobs/gar
 ATLAS_ALLOW_BAKE=1 argus-atlas bake jobs/garda-2 --checkpoint <ckpt> --workflow comfyui_sdxl_img2img_composite_nolora.json
 ```
 
-Any OGR-readable file works as a layer, in any CRS; a name outside the palette is burnt as a mask only and is available to a template as `$<name>`. OSM data is ODbL; `osm.json` records the query and the data timestamp so the attribution can be traced.
+Any OGR-readable file works as a layer, in any CRS; a name outside the palette is burnt as a mask only and is available to a template as `$<name>`. Where to get such files (HydroSHEDS, Natural Earth, Geofabrik extracts, GADM, land cover …) is in [`docs/data-sources.md`](https://github.com/smk762/argus-atlas/blob/main/docs/data-sources.md). OSM data is ODbL; `osm.json` records the query and the data timestamp so the attribution can be traced.
 
 ## Presets and provenance
 

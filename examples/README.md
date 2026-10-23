@@ -28,6 +28,12 @@ Two ways to load a job:
 
 Controls: opacity slider, "painted map" / "hillshade control" toggles, hold space to peek at the basemap.
 
-## `sample_dem.tif` (placeholder)
+## `sample_dem.tif`
 
-Before the first PyPI release, put a tiny public-domain DEM here (SRTM or similar, well under 2 MB) so the README quick start runs with no edits. See `TODO.md`, Phase 1.
+A 577x577-cell, 350 KB clip of Copernicus GLO-30 around the south end of Lake Garda (10.60–10.76 E, 45.44–45.60 N: Sirmione, the lake, the southern tip of Monte Baldo) so the README quick start runs with no edits:
+
+```bash
+argus-atlas controls --dem examples/sample_dem.tif --bbox 10.60,45.44,10.76,45.60 --out jobs/sample
+```
+
+Attribution, as the Copernicus DEM licence requires: produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved.

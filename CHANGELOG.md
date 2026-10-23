@@ -16,6 +16,7 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 - FastAPI server on port 8105 with read-only default, NDJSON bake stream, and DEM and land names confined to `ATLAS_DEM_DIR`.
 - Dockerfile on `ghcr.io/osgeo/gdal:ubuntu-small-3.11.4`; standalone CI that installs `gdal-bin` and runs the suite against real GDAL on a synthetic DEM.
 - README with value propositions and onboarding paths, launch checklist (`TODO.md`), PyPI discovery metadata.
+- `examples/sample_dem.tif`: a 350 KB Copernicus GLO-30 clip of southern Lake Garda so the quick start runs unedited.
 - `examples/viewer.html`: a static MapLibre page that drapes a job's `fantasy.pmtiles` on an OpenFreeMap basemap with an opacity slider and a hillshade comparison layer, loading from the API (`/jobs`, range requests on `/archive`) or a local `.pmtiles` file.
 - `scripts/fetch_civitai_lora.py`: operator helper that fetches SDXL LoRAs from Civitai into a `loras/` tree with SHA256 verification, resumable `.part` downloads and a `.civitai.json` sidecar.
 - `osm`: fetch OpenStreetMap features for a bbox from Overpass into per-layer GeoJSON (water, rivers, roads, rail, forest, urban, buildings, glaciers), with scale-aware tag rules per zoom, the raw extract kept and an `osm.json` manifest recording query, timestamp and digests.

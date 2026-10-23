@@ -9,10 +9,19 @@ Bake one georeferenced fantasy-map overlay from real terrain.
 
 `argus-atlas` warps a DEM into hillshade, slope, and land-mask control rasters with GDAL, restyles them through a diffusion backend with a cartography LoRA, stamps the painted pixels back onto the original geotransform, and cuts a PMTiles archive you can drape on a real map.
 
-<!-- Hero image lands here after the first real bake: hillshade left, fantasy right, same extent.
-     Must be an absolute URL so it renders on PyPI. See TODO.md, Phase 1. -->
+![Albany, Western Australia: DEM hillshade, the OSM composite, and the baked antique map, same extent](https://raw.githubusercontent.com/smk762/argus-atlas/main/docs/img/hero.jpg)
 
-**Status:** v0 in development. Nothing below is a promise about a published release until a real AOI has passed the alignment gate.
+King George Sound at Albany, Western Australia: the Copernicus GLO-30 hillshade, the composite control (hillshade plus OpenStreetMap water, forest and roads, with the sea taken from the DEM), and the bake. Same 1024x1024 canvas at 33 m/px, native zoom 12. Preset `antique`, seed 7, 30 steps, cfg 6, denoise 0.6, Juggernaut XL, no LoRA. The prompt, read back from the PNG's own EXIF:
+
+> antique fantasy map, ink coastlines, parchment, illustrated relief, blue water, no text, no labels, no compass rose
+>
+> negative: text, watermark, letters, words, frame, border, photograph, satellite
+
+![The overlay fading from the painted map to the real basemap and back: coastline and harbours stay put](https://raw.githubusercontent.com/smk762/argus-atlas/main/docs/img/hero-drape.gif)
+
+The GIF is `examples/viewer.html` sliding the overlay's opacity over an OpenFreeMap basemap. The coastline, the sound and the harbours do not move, because the model only ever painted pixels inside a frame GDAL had already georeferenced.
+
+**Status:** v0, first alpha being prepared. Real AOIs have passed the alignment gate (Lake Garda on 17 Oct 2026; four Western Australian AOIs on 23 Oct); see [`docs/first-bake.md`](https://github.com/smk762/argus-atlas/blob/main/docs/first-bake.md).
 
 Part of the [Argus suite](https://github.com/smk762?tab=repositories&q=argus).
 

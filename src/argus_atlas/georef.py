@@ -78,7 +78,7 @@ def verify_alignment(tif: Path, grid: Grid, *, tol: float = ALIGN_TOLERANCE) -> 
     return info
 
 
-def stamp(png: Path, tif: Path, grid: Grid) -> GdalCommand:
+def stamp(png: Path, tif: Path, grid: Grid, *, description: str | None = None) -> GdalCommand:
     """Write *tif* from *png* with the sidecar grid, passing the alignment gate.
 
     The PNG size is checked first (no GeoTIFF is attempted for a wrong-size
@@ -89,7 +89,7 @@ def stamp(png: Path, tif: Path, grid: Grid) -> GdalCommand:
     part = tif.with_name(f".{tif.name}.part")
     if part.exists():
         part.unlink()
-    command = gdal_ops.run(gdal_ops.stamp_argv(png, part, grid))
+    command = gdal_ops.run(gdal_ops.stamp_argv(png, part, grid, description=description))
     try:
         verify_alignment(part, grid)
     except AlignmentError:

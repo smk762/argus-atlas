@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ import pytest
 from argus_atlas.backends.base import BackendError
 from argus_atlas.bake import run_bake
 from argus_atlas.georef import AlignmentError
+from argus_atlas.hashing import sha256_file
 from argus_atlas.jobs import copy_job, load_sidecar
 from argus_atlas.models import AtlasError, BakeParams, JobSidecar, ProgressEvent
 from tests.conftest import requires_gdal
@@ -84,3 +86,20 @@ def test_copy_job_bakes_a_variant(job: tuple[Path, JobSidecar], models_dir: Path
     )
     assert baked.bake is not None and baked.bake.params.seed == 9
     assert load_sidecar(job_dir).bake is None, "the source job is untouched"
+
+
+def test_bake_embeds_payload_in_png_and_geotiff(job: tuple[Path, JobSidecar], models_dir: Path) -> None:
+    from argus_atlas import gdal_ops
+    from argus_atlas.metadata import read_png_payload
+
+    job_dir, _ = job
+    params = BakeParams(checkpoint="sd_xl_base_1.0.safetensors", seed=11, preset="imhof", prompt="p", negative="n")
+    sidecar = run_bake(job_dir, params, FakeBackend(), models_root=models_dir)
+    payload = read_png_payload(job_dir / "fantasy.png")
+    assert payload["params"]["preset"] == "imhof" and payload["params"]["seed"] == 11
+    assert payload["checkpoint"]["sha256"] == sidecar.bake.checkpoint.sha256
+    assert sidecar.bake.image.sha256 == sha256_file(job_dir / "fantasy.png")  # digest taken after embedding
+    info = gdal_ops.gdalinfo_json(job_dir / "fantasy.tif")
+    desc = info["metadata"][""]["TIFFTAG_IMAGEDESCRIPTION"]
+    assert json.loads(desc)["job_id"] == sidecar.job_id
+    assert info["metadata"][""]["TIFFTAG_SOFTWARE"] == "argus-atlas"

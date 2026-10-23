@@ -1,5 +1,8 @@
 """Cut a short XYZ pyramid from the aligned GeoTIFF and pack it as PMTiles.
 
+The archive's JSON metadata carries the bake payload (``argus_bake``) so a
+tileset can be ranked and reproduced without its job directory.
+
 ``gdal2tiles.py --xyz`` tiles the raster for ``zmin..zmax`` only — the zoom
 range ends at the canvas's **native** zoom (never finer) — and is bounded to
 the raster, so no tile lies outside the AOI. The directory is then packed with
@@ -73,7 +76,9 @@ def collect_xyz(xyz_dir: Path, grid: Grid, zmin: int, zmax: int) -> list[tuple[i
     return tiles
 
 
-def pack_pmtiles(tiles: list[tuple[int, int, int, Path]], out: Path, grid: Grid, *, name: str) -> int:
+def pack_pmtiles(
+    tiles: list[tuple[int, int, int, Path]], out: Path, grid: Grid, *, name: str, extra_metadata: dict | None = None
+) -> int:
     """Write *tiles* (XYZ PNGs) as one PMTiles v3 archive; return the tile count."""
     try:
         from pmtiles.tile import Compression, TileType, zxy_to_tileid
@@ -105,6 +110,7 @@ def pack_pmtiles(tiles: list[tuple[int, int, int, Path]], out: Path, grid: Grid,
         "minzoom": str(zooms[0]),
         "maxzoom": str(zooms[-1]),
         "generator": "argus-atlas",
+        **(extra_metadata or {}),
     }
     ordered = sorted(((zxy_to_tileid(z, x, y), path) for z, x, y, path in tiles), key=lambda t: t[0])
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -124,6 +130,7 @@ def build_tiles(
     native_zoom: int,
     name: str,
     work_dir: Path | None = None,
+    extra_metadata: dict | None = None,
 ) -> TilesRecord:
     """Tile *tif* for *zoom_range* with gdal2tiles and pack the result at *out*."""
     zmin, zmax = clip_zoom_range(zoom_range, native_zoom)
@@ -138,7 +145,7 @@ def build_tiles(
     try:
         gdal_ops.run(gdal_ops.tiles_argv(tiler, tif, xyz_dir, zmin, zmax))
         tiles = collect_xyz(xyz_dir, grid, zmin, zmax)
-        n = pack_pmtiles(tiles, out, grid, name=name)
+        n = pack_pmtiles(tiles, out, grid, name=name, extra_metadata=extra_metadata)
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
 
@@ -153,3 +160,23 @@ def build_tiles(
         packer=PACKER_PYTHON,
         completed_at=datetime.now(UTC).isoformat(timespec="seconds"),
     )
+
+
+def bake_metadata(sidecar) -> dict:  # noqa: ANN001 - JobSidecar
+    """``extra_metadata`` for :func:`build_tiles`: the bake payload under ``argus_bake``."""
+    if sidecar.bake is None:
+        return {}
+    from argus_atlas.metadata import bake_payload
+
+    b = sidecar.bake
+    return {
+        "argus_bake": bake_payload(
+            sidecar,
+            b.params,
+            checkpoint=b.checkpoint,
+            lora=b.lora,
+            backend=b.backend,
+            engine_version=b.engine_version,
+            workflow_sha256=b.workflow_sha256,
+        )
+    }

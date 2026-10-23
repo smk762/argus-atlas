@@ -108,3 +108,14 @@ def test_nolora_template_bakes_without_a_lora(monkeypatch: pytest.MonkeyPatch) -
     # A bare packaged name is accepted where a path is expected (--workflow / ATLAS_WORKFLOW).
     backend = get_backend("comfyui", workflow=Path(EXAMPLE_TEMPLATE_NOLORA), base_url="http://comfy:8188")
     assert "LoraLoader" not in {n["class_type"] for n in backend.template.values()}  # type: ignore[attr-defined]
+
+
+def test_any_control_can_be_a_placeholder() -> None:
+    from argus_atlas.backends.workflow import control_placeholders_used, example_template
+
+    template = example_template("comfyui_sdxl_img2img_composite_nolora.json")
+    assert control_placeholders_used(template) == {"hillshade": "$hillshade", "composite": "$composite"}
+    template["99"] = {"class_type": "LoadImage", "inputs": {"image": "$roads", "upload": "image"}}
+    assert control_placeholders_used(template)["roads"] == "$roads"
+    # value placeholders are never mistaken for controls
+    assert "seed" not in control_placeholders_used(template)

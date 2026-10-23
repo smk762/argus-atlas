@@ -58,9 +58,15 @@ MAX_LATITUDE = 85.05112878
 
 SIDECAR_NAME = "job.json"
 
-ControlKind = Literal["hillshade", "slope", "land"]
-CONTROL_KINDS: tuple[ControlKind, ...] = ("hillshade", "slope", "land")
-PreviewKind = Literal["hillshade", "slope", "land", "fantasy"]
+# Controls the DEM always yields, plus the painted composite; any other control is a
+# vector layer the operator supplied (``--layer name=path`` / ``--land``), named by them.
+BASE_CONTROL_KINDS: tuple[str, ...] = ("hillshade", "slope")
+COMPOSITE_KIND = "composite"
+# A water mask derived from the DEM (everything at or below --sea-level), for coasts: OSM has no ocean polygons.
+SEA_KIND = "sea"
+# Names a layer may not take: they are produced by atlas itself.
+RESERVED_CONTROL_KINDS: frozenset[str] = frozenset({*BASE_CONTROL_KINDS, COMPOSITE_KIND, SEA_KIND, "fantasy"})
+LAYER_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
 
 
 class AtlasError(RuntimeError):
@@ -207,6 +213,8 @@ class BakeParams(BaseModel):
     denoise: float = Field(default=DEFAULT_DENOISE, gt=0, le=1)
     sampler: str = DEFAULT_SAMPLER
     scheduler: str = DEFAULT_SCHEDULER
+    # The style preset the prompt/negative/denoise came from, if any (see argus_atlas.presets).
+    preset: str | None = None
 
 
 class BakeRecord(BaseModel):
@@ -258,6 +266,8 @@ class JobSidecar(BaseModel):
     created_at: str
     dem: FileRef
     land_source: FileRef | None = None
+    # layer name -> the vector file it was burnt from (absolute path + digest); ``land`` included.
+    layer_sources: dict[str, FileRef] = Field(default_factory=dict)
     bbox: BBox
     grid: Grid
     resolution: float = Field(gt=0)
@@ -280,6 +290,11 @@ class JobSidecar(BaseModel):
     def has_land(self) -> bool:
         return "land" in self.controls
 
+    @property
+    def layers(self) -> list[str]:
+        """The operator-supplied vector layers burnt into controls (not hillshade/slope/composite)."""
+        return sorted(k for k in self.controls if k not in RESERVED_CONTROL_KINDS)
+
 
 class JobDigest(BaseModel):
     """One row of ``GET /jobs`` — enough for a job browser, no paths."""
@@ -293,6 +308,8 @@ class JobDigest(BaseModel):
     resolution: float
     native_zoom: int
     has_land: bool
+    layers: list[str] = Field(default_factory=list)
+    has_composite: bool = False
     has_archive: bool
 
 

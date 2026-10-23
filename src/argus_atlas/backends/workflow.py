@@ -12,7 +12,9 @@ Placeholders, argus-proof style:
 * always needed — ``$checkpoint`` ``$positive`` ``$negative`` ``$seed``
   ``$steps`` ``$cfg`` ``$denoise`` ``$width`` ``$height`` ``$hillshade``;
 * LoRA — ``$lora`` and ``$lora_weight`` together, required iff a LoRA is given;
-* optional controls — ``$slope`` ``$land`` (uploaded only when the template uses them).
+* optional controls — ``$slope``, ``$composite``, ``$land`` or any ``$<layer>`` the
+  job has (uploaded only when the template uses them); a ``$name`` the job cannot
+  supply is an error.
 
 A needed placeholder the template lacks, or a LoRA slot without a LoRA, is a
 :class:`BackendError` that names the placeholder.
@@ -31,7 +33,10 @@ from argus_atlas.hashing import sha256_bytes
 EXAMPLE_TEMPLATE = "comfyui_sdxl_img2img_control.json"
 # Same graph without the LoraLoader, for a first bake before a cartography LoRA exists.
 EXAMPLE_TEMPLATE_NOLORA = "comfyui_sdxl_img2img_control_nolora.json"
-PACKAGED_TEMPLATES: tuple[str, ...] = (EXAMPLE_TEMPLATE, EXAMPLE_TEMPLATE_NOLORA)
+# No LoRA, and the img2img init image is the painted composite (water, forest,
+# roads …) while the ControlNet still reads the hillshade. Needs a job with layers.
+EXAMPLE_TEMPLATE_COMPOSITE = "comfyui_sdxl_img2img_composite_nolora.json"
+PACKAGED_TEMPLATES: tuple[str, ...] = (EXAMPLE_TEMPLATE, EXAMPLE_TEMPLATE_NOLORA, EXAMPLE_TEMPLATE_COMPOSITE)
 
 REQUIRED_PLACEHOLDERS: tuple[str, ...] = (
     "$checkpoint",
@@ -46,7 +51,20 @@ REQUIRED_PLACEHOLDERS: tuple[str, ...] = (
     "$hillshade",
 )
 LORA_PLACEHOLDERS: tuple[str, ...] = ("$lora", "$lora_weight")
-CONTROL_PLACEHOLDERS: dict[str, str] = {"hillshade": "$hillshade", "slope": "$slope", "land": "$land"}
+# Every non-control placeholder a template may use; anything else that starts
+# with "$" must be a control of the job (``$hillshade``, ``$slope``, ``$composite``, ``$<layer>``).
+VALUE_PLACEHOLDERS: frozenset[str] = frozenset(
+    {*REQUIRED_PLACEHOLDERS, *LORA_PLACEHOLDERS, "$sampler", "$scheduler"} - {"$hillshade"}
+)
+
+
+def control_placeholder(kind: str) -> str:
+    return f"${kind}"
+
+
+def control_placeholders_used(template: dict) -> dict[str, str]:
+    """``kind -> placeholder`` for every placeholder in *template* that names a control."""
+    return {p[1:]: p for p in placeholders_used(template) if p not in VALUE_PLACEHOLDERS}
 
 
 def load_template(path: Path) -> dict:

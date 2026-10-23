@@ -39,7 +39,7 @@ Settled decisions are summarised in `CLAUDE.md` (What this is) and the README's 
 ## Phase 3: a demo people can click
 
 - [ ] One baked PMTiles file on static hosting (Hetzner CX23 or the homelab, see handoff hosting note). No server process, just the file and a page.
-- [ ] A MapLibre page with the fantasy overlay on a real basemap and an opacity slider. Mobile-friendly, loads in under 3 s.
+- [x] A MapLibre page with the fantasy overlay on a real basemap and an opacity slider (`examples/viewer.html`; loads from the API or a local `.pmtiles`). Still to do for hosting: pin the overlay URL and measure the load time.
 - [ ] Demo URL goes in the README "Live demo" section and the `Demo` project URL in `pyproject.toml`
 - [ ] Demo page footer links back to PyPI and GitHub
 

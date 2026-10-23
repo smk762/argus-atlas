@@ -38,9 +38,27 @@ The nearest off-the-shelf neighbours and where they stop:
 - **Procedural generators:** `worldengine` renders "ancient style" maps, but only from its own simulated worlds, never from a real DEM.
 - **Research code:** `generative-ai-mapmaking` trains an SD 1.5 ControlNet on Swisstopo vector tiles. Scripts only, no DEM input, no georeferencing after generation, seams left to the reader.
 
+## OSM layers and the composite
+
+The hillshade tells the model where relief is, not where water, forest, towns or roads are. `argus-atlas osm` fetches those from OpenStreetMap for the same bbox, scale-aware (at zoom 11 you get motorways and primaries, not footpaths), and `controls --layer` burns each one to a mask on the canvas grid. The known layers are also painted over the hillshade into `composite.png`; the packaged `comfyui_sdxl_img2img_composite_nolora` template uses that as the img2img init image, so lakes come out blue and forests green while the ControlNet keeps the ridges where the DEM put them.
+
+```bash
+argus-atlas osm --bbox 10.55,45.40,10.95,45.90 --zoom 11 --layers water,rivers,roads,forest,urban --out osm/garda
+argus-atlas controls --dem dem.tif --bbox 10.55,45.40,10.95,45.90 --out jobs/garda-2 \
+  --layer water=osm/garda/water.geojson --layer rivers=osm/garda/rivers.geojson \
+  --layer roads=osm/garda/roads.geojson --layer forest=osm/garda/forest.geojson --layer urban=osm/garda/urban.geojson
+ATLAS_ALLOW_BAKE=1 argus-atlas bake jobs/garda-2 --checkpoint <ckpt> --workflow comfyui_sdxl_img2img_composite_nolora.json
+```
+
+Any OGR-readable file works as a layer, in any CRS; a name outside the palette is burnt as a mask only and is available to a template as `$<name>`. OSM data is ODbL; `osm.json` records the query and the data timestamp so the attribution can be traced.
+
+## Presets and provenance
+
+`argus-atlas presets` lists six named styles (antique, imhof, tolkien, watercolor, cyberpunk, minecraft, plus pixel) and `bake --preset <name>` uses one; the API has `GET /presets` and takes `preset` on the bake request, so a demo can offer a fixed menu instead of free-text prompts. Every output carries the full request: the PNG in an EXIF `ImageDescription` and a text chunk, the GeoTIFF in `TIFFTAG_IMAGEDESCRIPTION`, the PMTiles archive in its metadata. `exiftool fantasy.png`, `gdalinfo fantasy.tif` or `argus_atlas.metadata.read_png_payload()` give it back, which is what makes a hundred bakes rankable later.
+
 ## Live demo
 
-A baked PMTiles overlay on a MapLibre basemap with an opacity slider will be linked here after the first real AOI passes the alignment gate. Until then the fastest way to see it is the quick start below.
+A hosted demo will be linked here. Until then, [`examples/flow.html`](examples/flow.html) runs the whole flow against a local server (AOI, OSM layers, controls, bake, tiles, drape) and [`examples/viewer.html`](examples/viewer.html) drapes any baked job on a MapLibre basemap with an opacity slider: start `argus-atlas serve --cors` (with `ATLAS_CORS_ORIGINS='*'`) and open the page, or feed it a `fantasy.pmtiles` directly. The first real AOI (Lake Garda, Copernicus GLO-30, Juggernaut XL, no LoRA) passed the alignment gate on 17 Oct 2026; the commands are in [`docs/first-bake.md`](docs/first-bake.md).
 
 ## Quick start
 

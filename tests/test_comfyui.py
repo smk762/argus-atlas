@@ -40,6 +40,8 @@ class FakeTransport:
     def get_json(self, path: str) -> dict:
         if path == "/system_stats":
             return {"system": {"comfyui_version": "0.3.99"}}
+        if path == "/queue":
+            return {"queue_running": [[1, "p-1", {}, {}, []]], "queue_pending": []}
         if path.startswith("/history/"):
             self.history_polls += 1
             if self.history_polls < 2:
@@ -133,3 +135,36 @@ def test_multipart_encoding_is_well_formed() -> None:
     assert text.startswith(f"--{boundary}\r\n".encode()) and text.endswith(f"--{boundary}--\r\n".encode())
     assert b'name="overwrite"\r\n\r\ntrue\r\n' in text
     assert b'name="image"; filename="a.png"\r\nContent-Type: image/png\r\n\r\nPNGDATA\r\n' in text
+
+
+def test_vanished_prompt_fails_fast(tmp_path: Path, controls: dict[str, Path]) -> None:
+    """ComfyUI restarted mid-bake: /history stays empty and /queue no longer lists the prompt."""
+
+    class Vanished(FakeTransport):
+        def get_json(self, path: str) -> dict:
+            if path == "/queue":
+                return {"queue_running": [], "queue_pending": []}
+            if path.startswith("/history/"):
+                self.history_polls += 1
+                return {}
+            return super().get_json(path)
+
+    transport = Vanished()
+    transport._tmp = str(tmp_path)
+    backend = ComfyUIBackend(
+        example_template(), "http://comfy:8188", transport=transport, poll_interval=0.0, vanish_after=0.0
+    )
+    with pytest.raises(BackendError, match="neither the queue nor the history"):
+        backend.generate(BakeRequest("j", GRID, PARAMS, controls), tmp_path / "out.png")
+    assert transport.history_polls < 5  # failed on the first queue check, not at the bake timeout
+
+
+def test_pending_prompt_keeps_polling(tmp_path: Path, controls: dict[str, Path]) -> None:
+    """Still queued (ComfyUI loading a checkpoint) is not 'vanished': polling continues to success."""
+    transport = FakeTransport()
+    transport._tmp = str(tmp_path)
+    backend = ComfyUIBackend(
+        example_template(), "http://comfy:8188", transport=transport, poll_interval=0.0, vanish_after=0.0
+    )
+    backend.generate(BakeRequest("j", GRID, PARAMS, controls), tmp_path / "out.png")
+    assert (tmp_path / "out.png").is_file()

@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atlas Bake Flow</title>
+<!--
+  The whole argus-atlas flow from a browser, against a running `argus-atlas serve`:
+    AOI from the map  ->  OSM layers (POST /osm, opt-in)  ->  controls (POST /controls)
+    ->  bake (POST /bake/stream, opt-in, NDJSON frames)  ->  tiles (POST /tiles)  ->  drape.
+  Every step is one API call the CLI also makes; nothing is computed in the page.
+
+  Start the server with the inputs it may name and the flags you want on:
+    ATLAS_ALLOW_BAKE=1 ATLAS_ALLOW_OSM=1 ATLAS_CORS_ORIGINS='*' ATLAS_DEM_DIR=... ATLAS_WORKFLOW=... argus-atlas serve --cors
+  Static page, no build step; libraries pinned from public CDNs, everything else inline.
+-->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.js"></script>
+<script src="https://unpkg.com/pmtiles@3.0.7/dist/pmtiles.js"></script>
+<style>
+  :root {
+    --bg: #f6f2e9; --fg: #1f1b16; --muted: #6b655c; --line: #d9d2c4; --accent: #8a5a2b; --ok: #3f7d4e; --err: #b4321f;
+    --panel: rgba(255,252,246,.96);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #17150f; --fg: #ebe5d8; --muted: #a39c8e; --line: #3a362c; --accent: #d9a05b; --ok: #7fc08f; --err: #f08b78;
+      --panel: rgba(28,26,20,.95);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #17150f; --fg: #ebe5d8; --muted: #a39c8e; --line: #3a362c; --accent: #d9a05b; --ok: #7fc08f; --err: #f08b78;
+    --panel: rgba(28,26,20,.95);
+  }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, sans-serif; }
+  #map { position: absolute; inset: 0; }
+  #panel {
+    position: absolute; top: 12px; left: 12px; bottom: 12px; z-index: 2; width: min(380px, calc(100vw - 24px));
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px;
+    box-shadow: 0 2px 10px rgba(0,0,0,.15); box-sizing: border-box; overflow-y: auto;
+  }
+  h1 { font-size: 15px; margin: 0 0 6px; }
+  h2 { font-size: 13px; margin: 14px 0 6px; padding-top: 10px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; }
+  h2 .state { font-weight: normal; color: var(--muted); font-size: 12px; }
+  h2 .state.ok { color: var(--ok); } h2 .state.err { color: var(--err); }
+  label { display: block; margin: 6px 0 2px; color: var(--muted); font-size: 12px; }
+  input[type=text], input[type=number], select, textarea {
+    width: 100%; box-sizing: border-box; padding: 5px 6px; border: 1px solid var(--line); border-radius: 4px;
+    background: var(--bg); color: var(--fg); font: inherit;
+  }
+  textarea { min-height: 54px; resize: vertical; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .row { display: flex; gap: 8px; align-items: end; } .row > * { flex: 1; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
+  button { padding: 5px 10px; border: 1px solid var(--accent); border-radius: 4px; background: var(--accent); color: #fff; cursor: pointer; flex: 0 0 auto; font: inherit; }
+  button.secondary { background: transparent; color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+  .checks { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; }
+  .checks label { display: inline-flex; gap: 4px; align-items: center; margin: 0; color: var(--fg); font-size: 13px; }
+  .thumbs { display: flex; gap: 6px; margin-top: 6px; }
+  .thumbs figure { margin: 0; flex: 1; text-align: center; font-size: 11px; color: var(--muted); }
+  .thumbs img { width: 100%; border: 1px solid var(--line); border-radius: 3px; background: #888; }
+  #log { font: 11px/1.35 ui-monospace, monospace; background: var(--bg); border: 1px solid var(--line); border-radius: 4px;
+         padding: 6px; max-height: 150px; overflow-y: auto; white-space: pre-wrap; margin-top: 6px; }
+  #log .err { color: var(--err); } #log .done { color: var(--ok); }
+  .hint { font-size: 12px; color: var(--muted); margin: 4px 0 0; }
+  .flag { font-size: 11px; padding: 1px 6px; border-radius: 10px; border: 1px solid var(--line); color: var(--muted); margin-left: 4px; }
+  .flag.on { color: var(--ok); border-color: var(--ok); } .flag.off { color: var(--err); border-color: var(--err); }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <h1>Atlas bake flow</h1>
+  <div class="row">
+    <div><label for="server">Atlas server</label><input id="server" type="text" value="http://localhost:8105" spellcheck="false"></div>
+    <button id="connect" type="button">Connect</button>
+  </div>
+  <p class="hint" id="caps">Not connected.</p>
+
+  <h2>1 · AOI <span class="state" id="s-aoi"></span></h2>
+  <div class="grid2">
+    <div><label>west</label><input id="west" type="number" step="0.0001"></div>
+    <div><label>south</label><input id="south" type="number" step="0.0001"></div>
+    <div><label>east</label><input id="east" type="number" step="0.0001"></div>
+    <div><label>north</label><input id="north" type="number" step="0.0001"></div>
+  </div>
+  <div class="row" style="margin-top:6px">
+    <div><label for="jobid">Job id</label><input id="jobid" type="text" value="" spellcheck="false"></div>
+    <div><label for="longside">Long side px</label><input id="longside" type="number" value="1024" step="64" min="64" max="1536"></div>
+    <button id="use-view" type="button" class="secondary" title="Take the current map view as the AOI">Use map view</button>
+  </div>
+  <p class="hint">Pan and zoom the map, then <em>Use map view</em>. The planned canvas is shown after controls.</p>
+
+  <h2>2 · OSM layers <span class="state" id="s-osm"></span></h2>
+  <div class="checks" id="osm-layers"></div>
+  <div class="row" style="margin-top:6px">
+    <div><label for="osm-zoom">Scale (zoom)</label><input id="osm-zoom" type="number" value="11" min="0" max="19"></div>
+    <button id="fetch-osm" type="button" disabled>Fetch from Overpass</button>
+  </div>
+  <p class="hint" id="osm-hint">Or pick vector files already under the DEM dir in step 3.</p>
+
+  <h2>3 · Controls <span class="state" id="s-controls"></span></h2>
+  <label for="dem">DEM (under the server's DEM dir)</label>
+  <select id="dem" disabled><option value="">— connect first —</option></select>
+  <label>Vector layers to burn</label>
+  <div class="checks" id="vectors"><span class="hint">none available</span></div>
+  <div class="row" style="margin-top:6px">
+    <div style="flex:0 0 120px"><label for="sealevel" title="DEM cells at or below this become a 'sea' mask (Copernicus puts the sea at 0)">Sea level (m)</label><input id="sealevel" type="text" value="" placeholder="e.g. 0" spellcheck="false"></div>
+    <label style="display:inline-flex;gap:4px;align-items:center;color:var(--fg)"><input id="composite" type="checkbox" checked> paint composite</label>
+    <button id="run-controls" type="button" disabled>Run controls</button>
+  </div>
+  <div class="thumbs" id="control-thumbs"></div>
+  <p class="hint" id="grid-info"></p>
+
+  <h2>4 · Bake <span class="state" id="s-bake"></span></h2>
+  <label for="preset">Style preset</label>
+  <select id="preset"><option value="">— custom (free text below) —</option></select>
+  <p class="hint" id="preset-blurb"></p>
+  <div id="freetext">
+  <label for="checkpoint">Checkpoint (as ComfyUI lists it)</label>
+  <input id="checkpoint" type="text" value="" spellcheck="false" placeholder="sdxl/…/model.safetensors">
+  <label for="prompt">Prompt</label>
+  <textarea id="prompt">antique fantasy map, ink coastlines, parchment, illustrated relief, blue lake, no text, no labels, no compass rose</textarea>
+  <label for="negative">Negative</label>
+  <textarea id="negative" style="min-height:36px">text, watermark, letters, words, frame, border, photograph, satellite</textarea>
+  </div>
+  <div class="grid2">
+    <div><label for="denoise">Denoise</label><input id="denoise" type="number" value="0.55" step="0.05" min="0.05" max="1"></div>
+    <div><label for="seed">Seed</label><input id="seed" type="number" value="7" min="0"></div>
+    <div><label for="steps">Steps</label><input id="steps" type="number" value="30" min="1"></div>
+    <div><label for="cfg">CFG</label><input id="cfg" type="number" value="6" step="0.5" min="1"></div>
+  </div>
+  <div class="row" style="margin-top:6px">
+    <div><label for="lora">LoRA (optional)</label><input id="lora" type="text" value="" spellcheck="false" placeholder="sdxl/…/lora.safetensors"></div>
+    <div style="flex:0 0 70px"><label for="loraw">weight</label><input id="loraw" type="number" value="0.8" step="0.1" min="0" max="2"></div>
+    <button id="run-bake" type="button" disabled>Bake</button>
+  </div>
+  <div id="log"></div>
+
+  <h2>5 · Tiles &amp; drape <span class="state" id="s-tiles"></span></h2>
+  <div class="row">
+    <button id="run-tiles" type="button" disabled>Cut tiles</button>
+    <button id="drape" type="button" class="secondary" disabled>Drape on map</button>
+  </div>
+  <label for="opacity">Overlay opacity <span id="opval">80%</span></label>
+  <input id="opacity" type="range" min="0" max="100" value="80" disabled>
+  <p class="hint">Hold <kbd>space</kbd> to peek at the basemap. Existing jobs:
+    <select id="existing" style="width:auto;display:inline-block"><option value="">—</option></select>
+  </p>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const setState = (id, text, cls) => { const el = $(id); el.textContent = text || ""; el.className = "state " + (cls || ""); };
+  const logLine = (text, cls) => { const d = document.createElement("div"); d.textContent = text; if (cls) d.className = cls; $("log").appendChild(d); $("log").scrollTop = 1e9; };
+  const serverBase = () => $("server").value.trim().replace(/\/+$/, "");
+  const bboxText = () => ["west", "south", "east", "north"].map((k) => Number($(k).value).toFixed(5)).join(",");
+  const api = async (method, path, body) => {
+    const res = await fetch(serverBase() + path, { method, headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
+    const text = await res.text();
+    let data; try { data = JSON.parse(text); } catch { data = { detail: text }; }
+    if (!res.ok) throw new Error(`${method} ${path} → ${res.status}: ${typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail)}`);
+    return data;
+  };
+
+  // ---- map + AOI rectangle ----
+  const protocol = new pmtiles.Protocol();
+  maplibregl.addProtocol("pmtiles", protocol.tile);
+  const map = new maplibregl.Map({ container: "map", style: "https://tiles.openfreemap.org/styles/liberty", center: [10.75, 45.65], zoom: 9, attributionControl: { compact: true } });
+  map.addControl(new maplibregl.NavigationControl(), "top-right");
+  map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
+  let mapReady = false;
+  map.on("load", () => {
+    mapReady = true;
+    map.addSource("aoi", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+    map.addLayer({ id: "aoi-line", type: "line", source: "aoi", paint: { "line-color": "#8a5a2b", "line-width": 2, "line-dasharray": [2, 1] } });
+    drawAoi();
+  });
+  function drawAoi() {
+    if (!mapReady) return;
+    const w = Number($("west").value), s = Number($("south").value), e = Number($("east").value), n = Number($("north").value);
+    const feats = [w, s, e, n].every(Number.isFinite) && e > w && n > s
+      ? [{ type: "Feature", geometry: { type: "Polygon", coordinates: [[[w, s], [e, s], [e, n], [w, n], [w, s]]] } }] : [];
+    map.getSource("aoi").setData({ type: "FeatureCollection", features: feats });
+    setState("s-aoi", feats.length ? bboxText() : "", feats.length ? "ok" : "");
+  }
+  ["west", "south", "east", "north"].forEach((k) => $(k).addEventListener("input", drawAoi));
+  $("use-view").addEventListener("click", () => {
+    const b = map.getBounds();
+    $("west").value = b.getWest().toFixed(4); $("south").value = b.getSouth().toFixed(4);
+    $("east").value = b.getEast().toFixed(4); $("north").value = b.getNorth().toFixed(4);
+    if (!$("jobid").value) $("jobid").value = "aoi-" + new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "").slice(2);
+    $("osm-zoom").value = Math.min(14, Math.max(0, Math.round(map.getZoom())));
+    drawAoi();
+  });
+
+  // ---- overlays (same as viewer.html) ----
+  const FANTASY = "atlas-fantasy";
+  let peeking = false;
+  function applyOpacity() {
+    $("opval").textContent = $("opacity").value + "%";
+    if (map.getLayer(FANTASY)) map.setPaintProperty(FANTASY, "raster-opacity", peeking ? 0 : Number($("opacity").value) / 100);
+  }
+  async function drape(jobId) {
+    if (map.getLayer(FANTASY)) map.removeLayer(FANTASY);
+    if (map.getSource(FANTASY)) map.removeSource(FANTASY);
+    const archive = new pmtiles.PMTiles(`${serverBase()}/jobs/${encodeURIComponent(jobId)}/archive`);
+    protocol.add(archive);
+    const header = await archive.getHeader();
+    const firstSymbol = (map.getStyle().layers.find((l) => l.type === "symbol") || {}).id;
+    map.addSource(FANTASY, { type: "raster", url: "pmtiles://" + archive.source.getKey(), tileSize: 256, attribution: "argus-atlas overlay" });
+    map.addLayer({ id: FANTASY, type: "raster", source: FANTASY, paint: { "raster-opacity": 0, "raster-fade-duration": 0 } }, firstSymbol);
+    map.fitBounds([[header.minLon, header.minLat], [header.maxLon, header.maxLat]], { padding: 24, duration: 600 });
+    $("opacity").disabled = false; applyOpacity();
+    setState("s-tiles", `${jobId} draped, z${header.minZoom}–${header.maxZoom}`, "ok");
+  }
+  $("opacity").addEventListener("input", applyOpacity);
+  window.addEventListener("keydown", (e) => { if (e.code === "Space" && !e.repeat && !/INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) { peeking = true; applyOpacity(); e.preventDefault(); } });
+  window.addEventListener("keyup", (e) => { if (e.code === "Space") { peeking = false; applyOpacity(); } });
+
+  // ---- state across steps ----
+  const OSM_LAYERS = ["water", "rivers", "roads", "rail", "forest", "urban", "buildings", "glaciers"];
+  const OSM_DEFAULT = new Set(["water", "rivers", "roads", "forest", "urban"]);
+  let caps = { read_only: true, osm_allowed: false };
+  let presets = [];
+  // ?lock=1 hides the free-text fields: the demo offers the preset menu only (no moderation surface).
+  const locked = new URLSearchParams(location.search).get("lock") === "1";
+  if (locked) { $("freetext").style.display = "none"; }
+  function applyPreset() {
+    const p = presets.find((x) => x.name === $("preset").value);
+    $("preset-blurb").textContent = p ? `${p.blurb} denoise ${p.denoise}, cfg ${p.cfg}, ${p.steps} steps` : (locked ? "pick a preset" : "");
+    if (!p) return;
+    $("prompt").value = p.prompt; $("negative").value = p.negative;
+    $("denoise").value = p.denoise; $("cfg").value = p.cfg; $("steps").value = p.steps;
+  }
+  $("preset").addEventListener("change", applyPreset);
+  let inputs = { dems: [], vectors: [], osm: [] };
+  let job = null;  // sidecar of the current job
+  const selectedVectors = new Map();  // layer name -> relative file
+
+  $("osm-layers").innerHTML = OSM_LAYERS.map((l) => `<label><input type="checkbox" data-layer="${l}" ${OSM_DEFAULT.has(l) ? "checked" : ""}> ${l}</label>`).join("");
+
+  function renderVectors() {
+    const box = $("vectors");
+    if (!inputs.vectors.length) { box.innerHTML = '<span class="hint">none under the DEM dir yet</span>'; return; }
+    box.innerHTML = inputs.vectors.map((v) => {
+      const name = v.split("/").pop().replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9_]/g, "_");
+      const on = selectedVectors.get(name) === v;
+      return `<label title="${v}"><input type="checkbox" data-vector="${v}" data-name="${name}" ${on ? "checked" : ""}> ${name} <span class="hint">(${v.split("/").slice(0, -1).join("/") || "."})</span></label>`;
+    }).join("");
+    box.querySelectorAll("input").forEach((cb) => cb.addEventListener("change", () => {
+      if (cb.checked) selectedVectors.set(cb.dataset.name, cb.dataset.vector); else selectedVectors.delete(cb.dataset.name);
+    }));
+  }
+
+  async function connect() {
+    try {
+      caps = await api("GET", "/health");
+      inputs = await api("GET", "/inputs");
+      presets = (await api("GET", "/presets")).presets;
+      const keep = $("preset").value;
+      const shown = locked ? presets.filter((p) => p.recommended) : [...presets].sort((a, b) => Number(b.recommended) - Number(a.recommended));
+      $("preset").innerHTML = (locked ? "" : '<option value="">— custom (free text below) —</option>') + shown.map((p) => `<option value="${p.name}">${p.recommended ? "" : "· "}${p.title} (${p.name})</option>`).join("");
+      $("preset").value = keep && presets.some((p) => p.name === keep) ? keep : (locked ? presets[0].name : "");
+      applyPreset();
+      const jobs = (await api("GET", "/jobs")).jobs;
+      const flag = (on, label) => `<span class="flag ${on ? "on" : "off"}">${label} ${on ? "on" : "off"}</span>`;
+      $("caps").innerHTML = `argus-atlas ${caps.version}, GDAL ${caps.gdal || "missing"} ${flag(!caps.read_only, "bake")}${flag(caps.osm_allowed, "osm")} · DEM dir ${inputs.root}`;
+      $("dem").innerHTML = inputs.dems.length ? inputs.dems.map((d) => `<option value="${d}">${d}</option>`).join("") : '<option value="">— no DEM under the DEM dir —</option>';
+      $("dem").disabled = !inputs.dems.length;
+      renderVectors();
+      $("fetch-osm").disabled = !caps.osm_allowed;
+      $("osm-hint").textContent = caps.osm_allowed ? "Writes <DEM dir>/osm/<job id>/ and ticks the layers below." : "Server fetch is off (ATLAS_ALLOW_OSM=1 enables it); run `argus-atlas osm` and pick the files below.";
+      $("run-controls").disabled = !inputs.dems.length;
+      $("existing").innerHTML = '<option value="">—</option>' + jobs.map((j) => `<option value="${j.job_id}">${j.job_id} (${j.status})</option>`).join("");
+      if (!caps.read_only) { const last = jobs.find((j) => j.status !== "controls"); if (last && !$("checkpoint").value) { try { $("checkpoint").value = (await api("GET", `/jobs/${last.job_id}`)).sidecar.bake.checkpoint.name; } catch {} } }
+    } catch (err) {
+      $("caps").textContent = `Cannot reach ${serverBase()}: ${err.message}`;
+    }
+  }
+
+  async function fetchOsm() {
+    const name = $("jobid").value.trim();
+    if (!name) return setState("s-osm", "set a job id first", "err");
+    const layers = [...$("osm-layers").querySelectorAll("input:checked")].map((cb) => cb.dataset.layer);
+    setState("s-osm", "fetching from Overpass… (a minute for a 40 km box)");
+    $("fetch-osm").disabled = true;
+    try {
+      const res = await api("POST", "/osm", { name, bbox: bboxText(), zoom: Number($("osm-zoom").value), layers });
+      inputs = await api("GET", "/inputs");
+      selectedVectors.clear();
+      for (const [layer, file] of Object.entries(res.layers)) selectedVectors.set(layer, file);
+      renderVectors();
+      setState("s-osm", `${Object.keys(res.layers).length} layers, ${(res.extract_bytes / 1e6).toFixed(1)} MB, OSM ${res.osm_base || ""}${res.skipped.length ? `; skipped ${res.skipped.join(",")}` : ""}`, "ok");
+    } catch (err) {
+      setState("s-osm", err.message, "err");
+    } finally { $("fetch-osm").disabled = !caps.osm_allowed; }
+  }
+
+  // GET /jobs/{id} and POST /controls answer {job_id, status, sidecar}; status is not inside the sidecar.
+  const statusOf = (sc) => sc.tiles ? "tiled" : sc.bake ? (sc.bake.aligned ? "baked" : "unaligned") : "controls";
+  function showJob(sidecar) {
+    job = sidecar;
+    const g = sidecar.grid;
+    $("grid-info").textContent = `${sidecar.job_id}: ${g.width}×${g.height} px at ${sidecar.resolution.toFixed(1)} m/px, native zoom ${sidecar.native_zoom}, controls: ${Object.keys(sidecar.controls).join(", ")}`;
+    const kinds = ["hillshade", ...(sidecar.controls.composite ? ["composite"] : []), ...(sidecar.bake && sidecar.bake.image ? ["fantasy"] : [])];
+    $("control-thumbs").innerHTML = kinds.map((k) => `<figure><img src="${serverBase()}/jobs/${encodeURIComponent(sidecar.job_id)}/preview/${k}?t=${Date.now()}" alt="${k}"><figcaption>${k}</figcaption></figure>`).join("");
+    setState("s-controls", statusOf(sidecar), "ok");
+    $("run-bake").disabled = caps.read_only;
+    $("run-tiles").disabled = !(sidecar.bake && sidecar.bake.aligned);
+    $("drape").disabled = !sidecar.tiles;
+    if (sidecar.bake) setState("s-bake", sidecar.bake.aligned ? `aligned, ${sidecar.bake.params.preset || "custom"}, seed ${sidecar.bake.params.seed}` : "gate failed", sidecar.bake.aligned ? "ok" : "err");
+    if (sidecar.tiles) setState("s-tiles", `${sidecar.tiles.n_tiles} tiles z${sidecar.tiles.min_zoom}–${sidecar.tiles.max_zoom}`, "ok");
+    ["west", "south", "east", "north"].forEach((k) => { $(k).value = sidecar.bbox[k]; }); drawAoi();
+    $("jobid").value = sidecar.job_id;
+  }
+
+  async function runControls() {
+    const jobId = $("jobid").value.trim();
+    if (!jobId) return setState("s-controls", "set a job id", "err");
+    setState("s-controls", "running GDAL…");
+    $("run-controls").disabled = true;
+    try {
+      const layers = Object.fromEntries(selectedVectors);
+      const sea = $("sealevel").value.trim();
+      const res = await api("POST", "/controls", { dem: $("dem").value, bbox: bboxText(), job_id: jobId, layers, composite: $("composite").checked, long_side: Number($("longside").value) || null, sea_level: sea === "" ? null : Number(sea) });
+      showJob(res.sidecar || (await api("GET", `/jobs/${jobId}`)).sidecar);
+      await connect();
+    } catch (err) {
+      setState("s-controls", err.message, "err");
+    } finally { $("run-controls").disabled = false; }
+  }
+
+  async function runBake() {
+    if (!job) return;
+    $("log").innerHTML = ""; setState("s-bake", "baking…");
+    $("run-bake").disabled = true;
+    const preset = $("preset").value || null;
+    const body = {
+      job_id: job.job_id, checkpoint: $("checkpoint").value.trim(), preset, seed: Number($("seed").value),
+      lora: $("lora").value.trim() || null, lora_weight: Number($("loraw").value),
+      ...(locked && preset ? {} : {
+        prompt: $("prompt").value, negative: $("negative").value,
+        denoise: Number($("denoise").value), steps: Number($("steps").value), cfg: Number($("cfg").value),
+      }),
+    };
+    try {
+      const res = await fetch(serverBase() + "/bake/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (!res.ok) throw new Error(`POST /bake/stream → ${res.status}: ${await res.text()}`);
+      const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = "";
+      let finished = false;
+      while (true) {
+        const { value, done } = await reader.read(); if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let nl; while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1); if (!line) continue;
+          const ev = JSON.parse(line); logLine(`[${ev.type}] ${ev.message}`, ev.type === "error" ? "err" : ev.type === "done" ? "done" : "");
+          if (ev.type === "done") finished = true;
+          if (ev.type === "error") { setState("s-bake", ev.message, "err"); }
+        }
+      }
+      showJob((await api("GET", `/jobs/${job.job_id}`)).sidecar);
+      if (finished && job.bake && job.bake.aligned) { await runTiles(); }
+    } catch (err) {
+      logLine(err.message, "err"); setState("s-bake", err.message, "err");
+    } finally { $("run-bake").disabled = caps.read_only; }
+  }
+
+  async function runTiles() {
+    if (!job) return;
+    setState("s-tiles", "cutting tiles…"); $("run-tiles").disabled = true;
+    try {
+      await api("POST", "/tiles", { job_id: job.job_id });
+      showJob((await api("GET", `/jobs/${job.job_id}`)).sidecar);
+      await drape(job.job_id);
+    } catch (err) { setState("s-tiles", err.message, "err"); }
+    finally { $("run-tiles").disabled = !(job && job.bake && job.bake.aligned); }
+  }
+
+  $("connect").addEventListener("click", connect);
+  $("fetch-osm").addEventListener("click", fetchOsm);
+  $("run-controls").addEventListener("click", runControls);
+  $("run-bake").addEventListener("click", runBake);
+  $("run-tiles").addEventListener("click", runTiles);
+  $("drape").addEventListener("click", () => job && drape(job.job_id));
+  $("existing").addEventListener("change", async () => {
+    const id = $("existing").value; if (!id) return;
+    try { showJob((await api("GET", `/jobs/${id}`)).sidecar); if (job.tiles) await drape(id); } catch (err) { setState("s-controls", err.message, "err"); }
+  });
+
+  const q = new URLSearchParams(location.search);
+  if (q.get("server")) $("server").value = q.get("server");
+  connect().then(() => { if (q.get("job")) { $("existing").value = q.get("job"); $("existing").dispatchEvent(new Event("change")); } });
+})();
+</script>
+</body>
+</html>

@@ -13,28 +13,14 @@ import shutil
 import time
 from pathlib import Path
 
-from argus_atlas.models import SIDECAR_NAME, AtlasError, JobDigest, JobSidecar
+from argus_atlas.models import COMPOSITE_KIND, SIDECAR_NAME, AtlasError, JobDigest, JobSidecar
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
-# preview kind -> filename inside the job dir
-PREVIEW_FILES: dict[str, str] = {
-    "hillshade": "hillshade.png",
-    "slope": "slope.png",
-    "land": "land.png",
-    "fantasy": "fantasy.png",
-}
-# Files that constitute a reusable controls job (copied by copy_job).
-CONTROL_ARTIFACTS: tuple[str, ...] = (
-    SIDECAR_NAME,
-    "dem_3857.tif",
-    "hillshade.tif",
-    "hillshade.png",
-    "slope.tif",
-    "slope.png",
-    "land_mask.tif",
-    "land.png",
-)
+# Fixed preview names; any other kind is looked up in the job's controls.
+PREVIEW_FILES: dict[str, str] = {"fantasy": "fantasy.png"}
+# Outputs of a bake/tiles run — everything else in a job dir is a control artifact copy_job carries over.
+BAKE_OUTPUT_PREFIX = "fantasy"
 
 
 def is_safe_id(value: str) -> bool:
@@ -82,6 +68,8 @@ def digest(sidecar: JobSidecar) -> JobDigest:
         resolution=sidecar.resolution,
         native_zoom=sidecar.native_zoom,
         has_land=sidecar.has_land,
+        layers=sidecar.layers,
+        has_composite=COMPOSITE_KIND in sidecar.controls,
         has_archive=sidecar.tiles is not None,
     )
 
@@ -93,10 +81,9 @@ def copy_job(src: Path, dst: Path) -> JobSidecar:
     sidecar = load_sidecar(src)
     job_id = require_safe_id(dst.name)
     dst.mkdir(parents=True, exist_ok=True)
-    for name in CONTROL_ARTIFACTS:
-        source = src / name
-        if source.is_file() and name != SIDECAR_NAME:
-            shutil.copy2(source, dst / name)
+    for source in src.iterdir():
+        if source.is_file() and source.name != SIDECAR_NAME and not source.name.startswith(BAKE_OUTPUT_PREFIX):
+            shutil.copy2(source, dst / source.name)
     fresh = sidecar.model_copy(update={"job_id": job_id, "bake": None, "tiles": None})
     save_sidecar(dst, fresh)
     return fresh
@@ -139,7 +126,10 @@ class JobStore:
         """The PNG for *kind* in job *job_id*, or ``None`` if it does not exist."""
         name = PREVIEW_FILES.get(kind)
         if name is None:
-            raise AtlasError(f"unknown preview kind {kind!r}; choose one of {', '.join(PREVIEW_FILES)}")
+            ref = self.load(job_id).controls.get(kind)
+            if ref is None:
+                raise AtlasError(f"unknown preview kind {kind!r}: not a control of job {job_id!r}")
+            name = Path(ref.path).name
         path = self.dir(job_id) / name
         return path if path.is_file() else None
 

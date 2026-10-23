@@ -7,13 +7,17 @@ symmetrically so the grid stays square-pixelled. An AOI that cannot fit the cap
 at the requested resolution fails with the largest extent that would.
 
 :func:`build_controls` then runs GDAL: warp the DEM onto that grid, derive a
-hillshade and a slope, optionally burn a land mask, export 8-bit PNGs for the
-model, verify the hillshade's grid against the plan, and write ``job.json``.
+hillshade and a slope, burn every vector layer the operator supplied (``--land``
+is the layer named ``land``) to a 0/255 mask, paint the known layers over the
+hillshade into an RGB *composite* (water blue, forest green, roads dark …) that
+a template can use as the img2img init image, export 8-bit PNGs for the model,
+verify the hillshade's grid against the plan, and write ``job.json``.
 """
 
 from __future__ import annotations
 
 import math
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -25,8 +29,12 @@ from argus_atlas.jobs import require_safe_id, save_sidecar
 from argus_atlas.mercator import bbox_to_mercator, mercator_to_bbox, native_zoom, zoom_range
 from argus_atlas.models import (
     ALIGN_TOLERANCE,
+    COMPOSITE_KIND,
     DEFAULT_LONG_SIDE,
+    LAYER_NAME_PATTERN,
     MAX_LONG_SIDE,
+    RESERVED_CONTROL_KINDS,
+    SEA_KIND,
     SIDE_MULTIPLE,
     AtlasError,
     BBox,
@@ -44,8 +52,24 @@ WARPED_DEM = "dem_3857.tif"
 CONTROL_FILES: dict[str, tuple[str, str]] = {
     "hillshade": ("hillshade.tif", "hillshade.png"),
     "slope": ("slope.tif", "slope.png"),
-    "land": ("land_mask.tif", "land.png"),
+    COMPOSITE_KIND: ("composite.tif", "composite.png"),
 }
+# Layers painted into the composite, in paint order (first on top): colour and
+# whether the hillshade modulates it. A layer not listed here is burnt as a
+# mask only. Everything else (land, custom names) stays a plain mask.
+COMPOSITE_PALETTE: dict[str, tuple[tuple[int, int, int], bool]] = {
+    "roads": ((40, 35, 30), False),
+    "rail": ((60, 50, 50), False),
+    "rivers": ((70, 110, 160), False),
+    "water": ((70, 110, 160), False),
+    SEA_KIND: ((70, 110, 160), False),
+    "buildings": ((120, 100, 90), False),
+    "glaciers": ((235, 240, 250), True),
+    "urban": ((170, 165, 160), True),
+    "forest": ((80, 130, 70), True),
+}
+# Line layers are burnt all-touched so a one-pixel road survives diagonals.
+LINE_LAYERS: frozenset[str] = frozenset({"roads", "rail", "rivers"})
 # Slope degrees -> Byte. 0..60° covers alpine terrain; steeper clips to 255.
 SLOPE_SCALE = (0.0, 60.0, 0, 255)
 
@@ -117,26 +141,58 @@ def verify_raster_grid(path: Path, grid: Grid, *, tol: float = ALIGN_TOLERANCE) 
     return info
 
 
+def validate_layer_name(name: str) -> str:
+    if not re.match(LAYER_NAME_PATTERN, name):
+        raise AtlasError(f"bad layer name {name!r}: lowercase letters, digits and _ only, up to 32 characters")
+    if name in RESERVED_CONTROL_KINDS:
+        raise AtlasError(f"layer name {name!r} is reserved (atlas writes that control itself)")
+    return name
+
+
 def build_controls(
     dem: Path,
     bbox: BBox,
     out_dir: Path,
     *,
     land: Path | None = None,
+    layers: dict[str, Path] | None = None,
+    sea_level: float | None = None,
+    composite: bool = True,
     long_side: int | None = None,
     resolution: float | None = None,
     job_id: str | None = None,
 ) -> JobSidecar:
-    """Warp the DEM, write hillshade/slope(/land) controls and ``job.json`` under *out_dir*."""
+    """Warp the DEM, write hillshade/slope(/layer masks/composite) controls and ``job.json`` under *out_dir*.
+
+    *layers* maps a control name to any OGR-readable vector file (GeoJSON, GPKG,
+    shapefile …) in any CRS; *land* is shorthand for ``layers["land"]``. Each
+    is reprojected and clipped to the canvas, then burnt to a 0/255 mask.
+    *sea_level* (metres) adds a ``sea`` mask of every DEM cell at or below it —
+    OSM has no ocean polygons, and Copernicus GLO-30 puts the sea at exactly 0.
+    With *composite*, the layers in :data:`COMPOSITE_PALETTE` are painted over
+    the hillshade into ``composite.png`` as well.
+    """
     dem = dem.expanduser()
     if not dem.is_file():
         raise AtlasError(f"DEM not found: {dem}")
+    sources: dict[str, Path] = {}
     if land is not None:
-        land = land.expanduser()
-        if not land.is_file():
-            raise AtlasError(f"land polygon file not found: {land}")
+        sources["land"] = land
+    for name, path in (layers or {}).items():
+        if validate_layer_name(name) in sources:
+            raise AtlasError(f"layer {name!r} given twice")
+        sources[name] = path
+    for name, path in sources.items():
+        path = sources[name] = path.expanduser()
+        if not path.is_file():
+            raise AtlasError(f"{name} layer file not found: {path}")
     job_id = require_safe_id(job_id or out_dir.name, "job id")
     gdal_ops.require_gdal()
+    paintable = sea_level is not None or any(n in COMPOSITE_PALETTE for n in sources)
+    needs_calc = sea_level is not None or (composite and paintable)
+    calc = gdal_ops.find_calc() if needs_calc else None
+    if needs_calc and calc is None:
+        raise AtlasError("the sea mask and the composite control need gdal_calc.py (python3-gdal / gdal-python-tools)")
 
     grid = plan_grid(bbox, long_side=long_side, resolution=resolution)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -155,11 +211,30 @@ def build_controls(
 
     controls: dict[str, FileRef] = {}
     pngs = {"hillshade": hill_png, "slope": slope_png}
-    if land is not None:
-        land_tif, land_png = (out_dir / n for n in CONTROL_FILES["land"])
-        commands.append(gdal_ops.run(gdal_ops.rasterize_argv(land, land_tif, grid)))
-        commands.append(gdal_ops.run(gdal_ops.to_png_argv(land_tif, land_png)))
-        pngs["land"] = land_png
+    masks: dict[str, Path] = {}
+    for name, source in sources.items():
+        clipped = out_dir / f"{name}_3857.geojson"
+        mask_tif, mask_png = out_dir / f"{name}_mask.tif", out_dir / f"{name}.png"
+        clipped.unlink(missing_ok=True)  # ogr2ogr refuses to overwrite GeoJSON
+        commands.append(gdal_ops.run(gdal_ops.reproject_argv(source, clipped, grid)))
+        commands.append(gdal_ops.run(gdal_ops.rasterize_argv(clipped, mask_tif, grid, all_touched=name in LINE_LAYERS)))
+        commands.append(gdal_ops.run(gdal_ops.to_png_argv(mask_tif, mask_png, nodata_none=True)))
+        pngs[name] = mask_png
+        masks[name] = mask_tif
+
+    if sea_level is not None:
+        sea_tif, sea_png = out_dir / f"{SEA_KIND}_mask.tif", out_dir / f"{SEA_KIND}.png"
+        commands.append(gdal_ops.run(gdal_ops.sea_mask_argv(calc, warped, sea_tif, sea_level)))
+        commands.append(gdal_ops.run(gdal_ops.to_png_argv(sea_tif, sea_png, nodata_none=True)))
+        pngs[SEA_KIND] = sea_png
+        masks[SEA_KIND] = sea_tif
+
+    if calc is not None and composite and paintable:
+        painted = [(masks[n], rgb, relief) for n, (rgb, relief) in COMPOSITE_PALETTE.items() if n in masks]
+        comp_tif, comp_png = (out_dir / n for n in CONTROL_FILES[COMPOSITE_KIND])
+        commands.append(gdal_ops.run(gdal_ops.composite_argv(calc, hill_tif, painted, comp_tif)))
+        commands.append(gdal_ops.run(gdal_ops.to_png_argv(comp_tif, comp_png)))
+        pngs[COMPOSITE_KIND] = comp_png
 
     # The hillshade raster must sit exactly on the planned grid — it is what the
     # model output is later checked against.
@@ -172,11 +247,13 @@ def build_controls(
         controls[kind] = FileRef(path=png.name, sha256=sha256_file(png))
 
     native = native_zoom(grid.resolution)
+    layer_sources = {n: FileRef(path=str(p.resolve()), sha256=sha256_file(p)) for n, p in sources.items()}
     sidecar = JobSidecar(
         job_id=job_id,
         created_at=datetime.now(UTC).isoformat(timespec="seconds"),
         dem=FileRef(path=str(dem.resolve()), sha256=sha256_file(dem)),
-        land_source=FileRef(path=str(land.resolve()), sha256=sha256_file(land)) if land else None,
+        land_source=layer_sources.get("land"),
+        layer_sources=layer_sources,
         bbox=bbox,
         grid=grid,
         resolution=grid.resolution,

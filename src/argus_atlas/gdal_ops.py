@@ -1,8 +1,8 @@
 """GDAL as subprocesses: argv builders plus one runner.
 
 GDAL is a **system package** (``gdal-bin``), never a pip module, and every
-operation here is a CLI call (``gdalwarp``, ``gdaldem``, ``gdal_rasterize``,
-``gdal_translate``, ``gdalinfo``, ``gdal2tiles``). Builders return plain argv
+operation here is a CLI call (``gdalwarp``, ``gdaldem``, ``ogr2ogr``,
+``gdal_rasterize``, ``gdal_calc``, ``gdal_translate``, ``gdalinfo``, ``gdal2tiles``). Builders return plain argv
 lists so the exact commands can be recorded in the job sidecar and replayed;
 :func:`run` executes one and turns a non-zero exit into a :class:`GdalError`
 carrying the tail of stderr.
@@ -26,9 +26,11 @@ class GdalError(AtlasError):
     """A GDAL tool is missing, or one exited non-zero."""
 
 
-GDAL_TOOLS: tuple[str, ...] = ("gdalinfo", "gdalwarp", "gdaldem", "gdal_rasterize", "gdal_translate")
+GDAL_TOOLS: tuple[str, ...] = ("gdalinfo", "gdalwarp", "gdaldem", "gdal_rasterize", "gdal_translate", "ogr2ogr")
 # Debian/Ubuntu ship the tiler as gdal2tiles.py (python3-gdal); some builds drop the suffix.
 TILER_CANDIDATES: tuple[str, ...] = ("gdal2tiles.py", "gdal2tiles")
+# Same for the raster calculator used to paint the composite control.
+CALC_CANDIDATES: tuple[str, ...] = ("gdal_calc.py", "gdal_calc")
 
 DEFAULT_TIMEOUT = 900.0
 
@@ -66,6 +68,15 @@ def require_gdal() -> str:
 def find_tiler() -> str | None:
     """Path of ``gdal2tiles.py`` (or ``gdal2tiles``), or ``None``."""
     for name in TILER_CANDIDATES:
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
+
+
+def find_calc() -> str | None:
+    """Path of ``gdal_calc.py`` (or ``gdal_calc``), or ``None``."""
+    for name in CALC_CANDIDATES:
         path = shutil.which(name)
         if path:
             return path
@@ -164,8 +175,30 @@ def slope_argv(dem_3857: Path, dst: Path) -> list[str]:
     return ["gdaldem", "slope", "-compute_edges", "-co", "COMPRESS=DEFLATE", str(dem_3857), str(dst)]
 
 
-def rasterize_argv(vector: Path, dst: Path, grid: Grid) -> list[str]:
-    """Burn a land polygon file (any OGR format) to a 0/255 Byte mask on the canvas grid."""
+def reproject_argv(
+    vector: Path, dst: Path, grid: Grid, *, layer: str | None = None, where: str | None = None
+) -> list[str]:
+    """Reproject an OGR source to EPSG:3857 and clip it to the canvas, as GeoJSON.
+
+    ``gdal_rasterize`` never reprojects (its ``-a_srs`` only labels the output),
+    so every vector goes through this step before it is burnt.
+    """
+    xmin, ymin, xmax, ymax = grid.bounds
+    argv = ["ogr2ogr", "-f", "GeoJSON", "-t_srs", CRS, "-clipdst", repr(xmin), repr(ymin), repr(xmax), repr(ymax)]
+    if where:
+        argv += ["-where", where]
+    argv += [str(dst), str(vector)]
+    if layer:
+        argv.append(layer)
+    return argv
+
+
+def rasterize_argv(vector: Path, dst: Path, grid: Grid, *, all_touched: bool = False) -> list[str]:
+    """Burn an EPSG:3857 vector (see :func:`reproject_argv`) to a 0/255 Byte mask on the canvas grid.
+
+    *all_touched* burns every pixel a geometry touches: use it for line layers
+    (roads, rivers) so a one-pixel road does not break up at 45°.
+    """
     return [
         "gdal_rasterize",
         "-burn",
@@ -178,6 +211,7 @@ def rasterize_argv(vector: Path, dst: Path, grid: Grid) -> list[str]:
         CRS,
         *_te(grid),
         *_ts(grid),
+        *(["-at"] if all_touched else []),
         "-co",
         "COMPRESS=DEFLATE",
         str(vector),
@@ -185,21 +219,93 @@ def rasterize_argv(vector: Path, dst: Path, grid: Grid) -> list[str]:
     ]
 
 
-def to_png_argv(src: Path, dst: Path, *, scale: tuple[float, float, int, int] | None = None) -> list[str]:
-    """Export a raster as an 8-bit PNG, optionally rescaling ``src_min src_max -> dst_min dst_max``."""
+def osm_layer_argv(osm: Path, dst: Path, osm_layer: str, where: str) -> list[str]:
+    """Extract one thematic layer from an ``.osm``/``.pbf`` file with GDAL's OSM
+    driver (which assembles multipolygon relations) into EPSG:4326 GeoJSON."""
+    return ["ogr2ogr", "-f", "GeoJSON", "-where", where, str(dst), str(osm), osm_layer]
+
+
+# Letters gdal_calc accepts for its inputs: A is the hillshade, the rest are masks in paint order.
+_CALC_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+def composite_argv(
+    calc: str,
+    hillshade: Path,
+    masks: list[tuple[Path, tuple[int, int, int], bool]],
+    dst: Path,
+) -> list[str]:
+    """Paint masks over the hillshade into an RGB GeoTIFF with ``gdal_calc``.
+
+    *masks* is ``[(mask_tif, (r, g, b), relief), ...]`` in paint order — the
+    first entry ends up on top. With *relief* the colour is modulated by the
+    hillshade (forests, towns); without it the area is flat (water, roads).
+    """
+    if len(masks) >= len(_CALC_LETTERS):
+        raise GdalError(f"too many layers for gdal_calc ({len(masks)})")
+    argv = [calc, "--quiet", "--overwrite", "--hideNoData", "--NoDataValue=none", "-A", str(hillshade)]
+    for i, (path, _, _) in enumerate(masks):
+        argv += [f"-{_CALC_LETTERS[i + 1]}", str(path)]
+    for band in range(3):
+        expr = "A"
+        for i, (_, rgb, relief) in reversed(list(enumerate(masks))):
+            letter = _CALC_LETTERS[i + 1]
+            value = f"{rgb[band]}*(0.5+A/510.0)" if relief else str(rgb[band])
+            expr = f"where({letter}>0,{value},{expr})"
+        argv += ["--calc", expr]
+    argv += ["--type", "Byte", "--co", "COMPRESS=DEFLATE", "--outfile", str(dst)]
+    return argv
+
+
+def sea_mask_argv(calc: str, dem_3857: Path, dst: Path, level: float) -> list[str]:
+    """0/255 mask of DEM cells at or below *level* metres (NoData cells excluded), via ``gdal_calc``."""
+    return [
+        calc,
+        "--quiet",
+        "--overwrite",
+        "--hideNoData",
+        "--NoDataValue=none",
+        "-A",
+        str(dem_3857),
+        "--calc",
+        f"255*logical_and(A<={level!r},A>-9000)",
+        "--type",
+        "Byte",
+        "--co",
+        "COMPRESS=DEFLATE",
+        "--outfile",
+        str(dst),
+    ]
+
+
+def to_png_argv(
+    src: Path, dst: Path, *, scale: tuple[float, float, int, int] | None = None, nodata_none: bool = False
+) -> list[str]:
+    """Export a raster as an 8-bit PNG, optionally rescaling ``src_min src_max -> dst_min dst_max``.
+
+    *nodata_none* drops the NoData flag (``gdal_rasterize`` marks 0 as NoData,
+    which would become a transparency chunk in the PNG).
+    """
     argv = ["gdal_translate", "-of", "PNG", "-ot", "Byte"]
+    if nodata_none:
+        argv += ["-a_nodata", "none"]
     if scale is not None:
         argv += ["-scale", repr(scale[0]), repr(scale[1]), str(scale[2]), str(scale[3])]
     return argv + [str(src), str(dst)]
 
 
-def stamp_argv(png: Path, tif: Path, grid: Grid) -> list[str]:
-    """Georeference a painted PNG into a GeoTIFF from the sidecar grid."""
+def stamp_argv(png: Path, tif: Path, grid: Grid, *, description: str | None = None) -> list[str]:
+    """Georeference a painted PNG into a GeoTIFF from the sidecar grid. *description*
+    (the bake payload JSON) goes into the standard ``TIFFTAG_IMAGEDESCRIPTION`` tag."""
     # Explicit driver: the gate writes to a ".part" temp name GDAL can't infer from.
+    tags = (
+        ["-mo", f"TIFFTAG_IMAGEDESCRIPTION={description}", "-mo", "TIFFTAG_SOFTWARE=argus-atlas"] if description else []
+    )
     return [
         "gdal_translate",
         "-of",
         "GTiff",
+        *tags,
         "-a_srs",
         CRS,
         "-a_ullr",

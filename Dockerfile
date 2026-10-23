@@ -17,8 +17,16 @@ WORKDIR /app
 
 # hatch-vcs derives the version from git history, so the build context must
 # include .git (keep it out of .dockerignore) and the image needs git.
+# eMudhra/emSign CA incident (Oct 2026, discuss.python.org/t/109576): Mozilla,
+# certifi 2026.10.19+, pip 26.2.2+ and uv 0.13.4+ dropped the emSign roots, but the
+# Ubuntu ca-certificates package has not caught up, and urllib (OSM fetch, ComfyUI
+# transport) trusts the *system* bundle. Upgrade the package and distrust the
+# emSign roots explicitly so no chain through them verifies in this image.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
+    && apt-get install -y --only-upgrade ca-certificates \
+    && sed -i 's|^mozilla/emSign|!mozilla/emSign|' /etc/ca-certificates.conf \
+    && update-ca-certificates --fresh >/dev/null \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . .

@@ -11,3 +11,6 @@ src/argus_atlas/_version.py
 
 # Local job output from the README walkthrough
 jobs/
+
+# Baked series exported for hand-off (zips, per-AOI job copies)
+output/

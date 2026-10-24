@@ -67,6 +67,7 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 - Workflow templates may use any control as a `$<name>` placeholder; the packaged `comfyui_sdxl_img2img_composite_nolora.json` uses `$composite` as the img2img init and `$hillshade` for the ControlNet.
 - ComfyUI backend fails fast when a queued prompt disappears from both `/queue` and `/history` (ComfyUI restarted mid-bake) instead of waiting out the bake timeout.
 - `docs/first-bake.md`: the morpheus runbook, amended with the first real bake (Lake Garda, Copernicus GLO-30), LoRA, prompt, checkpoint and denoise sweeps, and contact sheets under `docs/img/`.
+- `opencaching.allow_reuse`: the Geocaching Australia licence gate (CC BY-NC-SA 2.5). Geocaching.com is rejected. A commercial reuse, or a paid app, is refused before any listings are fetched.
 
 ### Fixed
 

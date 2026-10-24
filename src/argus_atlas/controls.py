@@ -158,6 +158,7 @@ def build_controls(
     layers: dict[str, Path] | None = None,
     sea_level: float | None = None,
     composite: bool = True,
+    resampling: str | None = None,
     long_side: int | None = None,
     resolution: float | None = None,
     job_id: str | None = None,
@@ -170,7 +171,9 @@ def build_controls(
     *sea_level* (metres) adds a ``sea`` mask of every DEM cell at or below it —
     OSM has no ocean polygons, and Copernicus GLO-30 puts the sea at exactly 0.
     With *composite*, the layers in :data:`COMPOSITE_PALETTE` are painted over
-    the hillshade into ``composite.png`` as well.
+    the hillshade into ``composite.png`` as well. *resampling* (``None`` = auto)
+    is the gdalwarp method: a spline when the canvas is much finer than the DEM,
+    so a 1 km AOI on a 30 m DEM does not inherit a cell staircase.
     """
     dem = dem.expanduser()
     if not dem.is_file():
@@ -200,7 +203,11 @@ def build_controls(
     logger.info("controls.plan", job_id=job_id, width=grid.width, height=grid.height, resolution=grid.resolution)
 
     warped = out_dir / WARPED_DEM
-    commands.append(gdal_ops.run(gdal_ops.warp_argv(dem, warped, grid)))
+    if resampling is None:
+        dem_m = gdal_ops.dem_pixel_metres(dem, (bbox.south + bbox.north) / 2)
+        resampling = gdal_ops.choose_resampling(dem_m, grid.resolution)
+        logger.info("controls.resampling", method=resampling, dem_metres=dem_m, canvas_metres=round(grid.resolution, 2))
+    commands.append(gdal_ops.run(gdal_ops.warp_argv(dem, warped, grid, resampling=resampling)))
 
     hill_tif, hill_png = (out_dir / n for n in CONTROL_FILES["hillshade"])
     slope_tif, slope_png = (out_dir / n for n in CONTROL_FILES["slope"])

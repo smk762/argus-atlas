@@ -135,6 +135,11 @@ def controls(
         None, "--sea-level", help="Metres: add a 'sea' mask of DEM cells at or below this (0 for Copernicus coasts)"
     ),
     composite: bool = Option(True, "--composite/--no-composite", help="Paint composite.png from the known layers"),
+    resampling: str | None = Option(
+        None,
+        "--resampling",
+        help="gdalwarp method (bilinear|cubic|cubicspline|lanczos|average); default: auto by upsampling ratio",
+    ),
     long_side: int | None = Option(
         None, "--long-side", help="Canvas long side in px (default 1024, cap 1536, multiple of 64)"
     ),
@@ -159,6 +164,7 @@ def controls(
             layers=layers,
             sea_level=sea_level,
             composite=composite,
+            resampling=resampling,
             long_side=long_side,
             resolution=resolution,
         )

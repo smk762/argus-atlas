@@ -164,3 +164,19 @@ def test_sea_level_mask_from_dem(dem: Path, tmp_path: Path) -> None:
     total = sidecar.grid.width * sidecar.grid.height
     assert set(counts) == {"0", "255"} and 0.05 < counts["255"] / total < 0.95
     assert any(c.tool.startswith("gdal_calc") for c in sidecar.commands)
+
+
+def test_resampling_is_a_spline_when_upsampling_hard(dem: Path, tmp_path: Path) -> None:
+    """The test DEM cell is ~123 m at 45 N; a 512 px canvas over 0.2 degrees is ~35 m/px (ratio 3.5), so auto picks cubicspline."""
+    sidecar = build_controls(dem, TEST_BBOX, tmp_path / "auto", long_side=2 * TEST_LONG_SIDE)
+    warp = next(c for c in sidecar.commands if c.tool == "gdalwarp")
+    assert warp.argv[warp.argv.index("-r") + 1] == "cubicspline"
+    sidecar = build_controls(dem, TEST_BBOX, tmp_path / "forced", long_side=TEST_LONG_SIDE, resampling="bilinear")
+    warp = next(c for c in sidecar.commands if c.tool == "gdalwarp")
+    assert warp.argv[warp.argv.index("-r") + 1] == "bilinear"
+    assert (
+        gdal_ops.choose_resampling(30.0, 78.0) == "bilinear" and gdal_ops.choose_resampling(30.0, 1.1) == "cubicspline"
+    )
+    assert gdal_ops.choose_resampling(None, 1.1) == "bilinear"
+    with pytest.raises(AtlasError, match="unknown resampling"):
+        build_controls(dem, TEST_BBOX, tmp_path / "bad", long_side=TEST_LONG_SIDE, resampling="nearest-ish")

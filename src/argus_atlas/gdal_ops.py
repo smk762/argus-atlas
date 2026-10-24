@@ -11,6 +11,7 @@ carrying the tail of stderr.
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import subprocess
 from pathlib import Path
@@ -130,15 +131,44 @@ def _ts(grid: Grid) -> list[str]:
     return ["-ts", str(grid.width), str(grid.height)]
 
 
-def warp_argv(dem: Path, dst: Path, grid: Grid) -> list[str]:
-    """Warp + clip a DEM onto the canvas grid in EPSG:3857 (bilinear, Float32)."""
+RESAMPLING_METHODS: tuple[str, ...] = ("bilinear", "cubic", "cubicspline", "lanczos", "average")
+# Above this DEM-cell-to-canvas-pixel ratio bilinear leaves a visible cell staircase in the
+# hillshade (piecewise-linear surface, gradient jumps at every cell edge); a spline is smooth.
+UPSAMPLE_SPLINE_RATIO = 2.0
+
+
+def dem_pixel_metres(dem: Path, latitude: float) -> float | None:
+    """The DEM's cell size in metres (geographic CRSs converted at *latitude*), or ``None`` if unknown."""
+    try:
+        info = gdalinfo_json(dem)
+        gt = info["geoTransform"]
+        wkt = str(info.get("coordinateSystem", {}).get("wkt", ""))
+    except (GdalError, KeyError, TypeError):
+        return None
+    cell = (abs(float(gt[1])) + abs(float(gt[5]))) / 2
+    if wkt.startswith(("GEOGCRS", "GEOGCS")):
+        return cell * 111320.0 * max(0.1, math.cos(math.radians(latitude)))
+    return cell
+
+
+def choose_resampling(dem_metres: float | None, canvas_metres: float) -> str:
+    """``cubicspline`` when the canvas is much finer than the DEM, else ``bilinear``."""
+    if dem_metres is not None and dem_metres / canvas_metres >= UPSAMPLE_SPLINE_RATIO:
+        return "cubicspline"
+    return "bilinear"
+
+
+def warp_argv(dem: Path, dst: Path, grid: Grid, *, resampling: str = "bilinear") -> list[str]:
+    """Warp + clip a DEM onto the canvas grid in EPSG:3857 (Float32)."""
+    if resampling not in RESAMPLING_METHODS:
+        raise GdalError(f"unknown resampling {resampling!r}; choose from {', '.join(RESAMPLING_METHODS)}")
     return [
         "gdalwarp",
         "-overwrite",
         "-t_srs",
         CRS,
         "-r",
-        "bilinear",
+        resampling,
         *_te(grid),
         *_ts(grid),
         "-ot",

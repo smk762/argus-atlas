@@ -89,6 +89,7 @@ class ControlsRequest(BaseModel):
     layers: dict[str, str] = Field(default_factory=dict)
     sea_level: float | None = None
     composite: bool = True
+    resampling: str | None = None
     long_side: int | None = Field(default=None, gt=0)
     resolution: float | None = Field(default=None, gt=0)
     job_id: str | None = None
@@ -351,6 +352,7 @@ def create_app(
                 layers=layers,
                 sea_level=request.sea_level,
                 composite=request.composite,
+                resampling=request.resampling,
                 long_side=request.long_side,
                 resolution=request.resolution,
                 job_id=job_id,

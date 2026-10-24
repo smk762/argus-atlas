@@ -55,7 +55,7 @@ from argus_atlas.models import (
 
 _BAKE_REFUSAL = "live baking is disabled on this host (set ATLAS_ALLOW_BAKE=1 to enable POST /bake/stream)"
 _OSM_REFUSAL = "fetching OSM from the server is disabled on this host (set ATLAS_ALLOW_OSM=1 to enable POST /osm)"
-INPUT_DEM_SUFFIXES = (".tif", ".tiff")
+INPUT_DEM_SUFFIXES = (".tif", ".tiff", ".vrt")
 INPUT_VECTOR_SUFFIXES = (".geojson", ".gpkg", ".shp", ".fgb")
 
 

@@ -63,6 +63,7 @@ def test_osm_403_when_disabled_and_inputs_lists_dem_dir(client: TestClient, root
     resp = client.post("/osm", json={"name": "x", "bbox": "10,45,10.1,45.1"})
     assert resp.status_code == 403 and "ATLAS_ALLOW_OSM" in resp.json()["detail"]
     (roots["dem"] / "srtm.tif").write_bytes(b"not really")
+    (roots["dem"] / "mosaic.vrt").write_bytes(b"<VRTDataset/>")  # GDAL virtual mosaics count as DEMs
     (roots["dem"] / "osm" / "garda").mkdir(parents=True)
     (roots["dem"] / "osm" / "garda" / "water.geojson").write_text("{}")
     (roots["dem"] / "osm" / "garda" / "osm.json").write_text(
@@ -71,7 +72,7 @@ def test_osm_403_when_disabled_and_inputs_lists_dem_dir(client: TestClient, root
     (roots["dem"] / "too" / "deep" / "for" / "us").mkdir(parents=True)
     (roots["dem"] / "too" / "deep" / "for" / "us" / "x.tif").write_bytes(b"")
     body = client.get("/inputs").json()
-    assert body["dems"] == ["srtm.tif"]
+    assert body["dems"] == ["mosaic.vrt", "srtm.tif"]
     assert body["vectors"] == ["osm/garda/water.geojson"]
     assert body["osm"] == [
         {

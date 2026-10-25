@@ -94,8 +94,8 @@
       "seed": "$seed",
       "steps": "$steps",
       "cfg": "$cfg",
-      "sampler_name": "dpmpp_2m",
-      "scheduler": "karras",
+      "sampler_name": "$sampler",
+      "scheduler": "$scheduler",
       "denoise": "$denoise",
       "model": [
         "1",

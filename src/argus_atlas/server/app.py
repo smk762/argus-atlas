@@ -430,7 +430,7 @@ def create_app(
     def tiles(request: TilesRequest) -> TilesRecord:
         """Cut the PMTiles archive for a baked job. Re-runs the alignment gate first."""
         from argus_atlas.georef import AlignmentError
-        from argus_atlas.tiles import tile_job
+        from argus_atlas.tiles import NotTileableError, tile_job
 
         sidecar = _load(request.job_id)
         job_dir = store.dir(sidecar.job_id)
@@ -440,6 +440,8 @@ def create_app(
             record = tile_job(job_dir, sidecar, min_zoom=request.min_zoom, max_zoom=request.max_zoom)
         except AlignmentError as exc:
             raise HTTPException(status_code=409, detail=f"alignment gate failed: {exc}") from exc
+        except NotTileableError as exc:  # e.g. a chunk whose crop failed: not tileable yet, like an unbaked job
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except gdal_ops.GdalError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except AtlasError as exc:

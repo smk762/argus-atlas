@@ -65,6 +65,10 @@ def run_bake(
     """
     sidecar = load_sidecar(job_dir)
     job_id = sidecar.job_id
+    if sidecar.recipe is not None and params.recipe != sidecar.recipe.recipe.name:
+        # Painted from other params (`bake`, POST /bake/stream): not that recipe's chunk any more, so
+        # neither job.json, the embedded payload nor find_neighbours may claim it is.
+        sidecar.recipe = None
     # A new bake replaces the timings of the last one; the control stages stay.
     timings = {k: v for k, v in sidecar.timings.items() if k in CONTROL_STAGES}
     clock = [time.perf_counter()]
@@ -154,8 +158,16 @@ def run_bake(
         if sidecar.chunk is not None:
             from argus_atlas.chunks import crop_chunk
 
-            emit("georeference", f"cropping the {sidecar.chunk.margin} px margin off chunk {sidecar.chunk.tile}")
-            image, command = crop_chunk(job_dir, sidecar)
+            try:
+                emit("georeference", f"cropping the {sidecar.chunk.margin} px margin off chunk {sidecar.chunk.tile}")
+                image, command = crop_chunk(job_dir, sidecar)
+            except AtlasError as exc:
+                # The canvas passed its gate but the tile did not: say so in job.json, not only in the stream.
+                lap("crop")
+                sidecar.timings = timings
+                sidecar.bake = sidecar.bake.model_copy(update={"error": f"crop failed: {exc}"})
+                save_sidecar(job_dir, sidecar)
+                raise
             sidecar.chunk = sidecar.chunk.model_copy(update={"image": image})
             sidecar.commands = [*sidecar.commands, command]
             lap("crop")

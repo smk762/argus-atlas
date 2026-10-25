@@ -57,6 +57,17 @@ def _job_dir_of(path: Path) -> Path:
     return path if path.is_dir() else path.parent
 
 
+def _parse_layers(items: list[str]) -> dict[str, Path]:
+    """``--layer name=path`` options -> ``{name: path}``."""
+    layers: dict[str, Path] = {}
+    for item in items:
+        name, sep, path = item.partition("=")
+        if not sep or not name or not path:
+            raise AtlasError(f"--layer expects name=path, got {item!r}")
+        layers[name] = Path(path)
+    return layers
+
+
 @app.command()
 def doctor(json_out: bool = Option(False, "--json", help="Machine-readable report")) -> None:
     """Report GDAL, the tiler, the PMTiles packer, the backend and the bake flag. Exits 1 if GDAL is missing."""
@@ -149,12 +160,7 @@ def controls(
     from argus_atlas.controls import build_controls
 
     try:
-        layers: dict[str, Path] = {}
-        for item in layer:
-            name, sep, path = item.partition("=")
-            if not sep or not name or not path:
-                raise AtlasError(f"--layer expects name=path, got {item!r}")
-            layers[name] = Path(path)
+        layers = _parse_layers(layer)
         aoi = BBox.parse(bbox)
         sidecar = build_controls(
             dem,
@@ -299,7 +305,7 @@ def tiles(
     """Cut XYZ tiles from the aligned GeoTIFF (native-2..native; a chunk's own zoom..native) and pack them as PMTiles."""
     from argus_atlas.georef import AlignmentError
     from argus_atlas.jobs import load_sidecar
-    from argus_atlas.tiles import FANTASY_PMTILES, tile_job
+    from argus_atlas.tiles import FANTASY_PMTILES, NotTileableError, tile_job
 
     job_dir = _job_dir_of(source)
     try:
@@ -313,6 +319,9 @@ def tiles(
         record = tile_job(job_dir, sidecar, out=out, min_zoom=min_zoom, max_zoom=max_zoom)
     except AlignmentError as exc:
         _fail(f"alignment gate failed, no tiles written: {exc}", 1)
+        return
+    except NotTileableError as exc:  # e.g. a chunk whose crop failed: an input state, like an unbaked job
+        _fail(str(exc), EXIT_INPUT)
         return
     except AtlasError as exc:
         _fail(str(exc), 1)
@@ -350,26 +359,34 @@ def chunk(
     if not controls_only and not config.bake_allowed():
         _fail(f"refusing to bake: set {config.ENV_ALLOW_BAKE}=1 (or pass --controls-only)", EXIT_REFUSED)
 
-    from argus_atlas.backends.base import BackendError
-    from argus_atlas.chunks import chunk_job_id, parse_tile, run_chunk
+    from argus_atlas import gdal_ops
+    from argus_atlas.chunks import chunk_job_id, parse_tile, run_chunk, validate_chunk
+    from argus_atlas.controls import check_inputs
+    from argus_atlas.jobs import require_safe_id
     from argus_atlas.recipes import load_recipe, recipe_record, recipe_workflow
 
-    job_dir: Path | None = out
+    # The inputs first, before anything is written: a mistake in them is EXIT_INPUT whatever the job
+    # dir already holds, and anything run_chunk raises after that is a runtime failure.
     try:
         z, x, y = parse_tile(tile)
+        validate_chunk(z, size, margin)
         loaded, recipe_path = load_recipe(recipe, recipes_root=config.recipes_dir())
-        layers: dict[str, Path] = {}
-        for item in layer:
-            name, sep, path = item.partition("=")
-            if not sep or not name or not path:
-                raise AtlasError(f"--layer expects name=path, got {item!r}")
-            layers[name] = Path(path)
+        workflow = None if controls_only else recipe_workflow(loaded, recipe_path)
+        layers = _parse_layers(layer)
+        check_inputs(dem, land, layers)
+        if resampling is not None and resampling not in gdal_ops.RESAMPLING_METHODS:
+            raise AtlasError(f"unknown resampling {resampling!r}; choose from {', '.join(gdal_ops.RESAMPLING_METHODS)}")
         job_dir = out if out is not None else config.jobs_dir() / chunk_job_id(loaded.name, z, x, y)
+        require_safe_id(job_dir.name)
+    except AtlasError as exc:
+        _fail(f"chunk failed: {exc}", EXIT_INPUT)
+        return
+    try:
         backend = None
-        if not controls_only:
+        if workflow is not None:
             from argus_atlas.backends import backend_from_env
 
-            backend = backend_from_env(workflow=recipe_workflow(loaded, recipe_path), base_url=comfyui_url)
+            backend = backend_from_env(workflow=workflow, base_url=comfyui_url)
         sidecar = run_chunk(
             dem,
             tile,
@@ -391,12 +408,8 @@ def chunk(
     except FileNotFoundError as exc:
         _fail(str(exc), EXIT_INPUT)
         return
-    except BackendError as exc:
+    except AtlasError as exc:  # BackendError and GdalError included
         _fail(f"chunk failed: {exc}", 1)
-        return
-    except AtlasError as exc:
-        # An error before job.json exists is an input problem (bad tile, recipe, DEM); after, a runtime one.
-        _fail(f"chunk failed: {exc}", EXIT_INPUT if job_dir is None or not (job_dir / "job.json").is_file() else 1)
         return
     timing = ", ".join(f"{k} {v:.1f}s" for k, v in sidecar.timings.items())
     typer.echo(f"{sidecar.job_id}: chunk {tile} [{sidecar.status}] in {job_dir} ({timing})")

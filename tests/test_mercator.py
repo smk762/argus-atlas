@@ -9,6 +9,7 @@ from argus_atlas.mercator import (
     bbox_to_mercator,
     intersects,
     lonlat_to_mercator,
+    mercator_to_bbox,
     mercator_to_lonlat,
     native_zoom,
     resolution_at_zoom,
@@ -16,7 +17,7 @@ from argus_atlas.mercator import (
     tiles_covering,
     zoom_range,
 )
-from argus_atlas.models import BBox
+from argus_atlas.models import MAX_LATITUDE, BBox
 
 
 def test_projection_known_points() -> None:
@@ -70,3 +71,10 @@ def test_tile_bounds_and_cover() -> None:
     # the neighbours just outside the range do not intersect
     assert not intersects(tile_bounds(11, tx0 - 1, ty0), box)
     assert not intersects(tile_bounds(11, tx1 + 1, ty0), box)
+
+
+def test_mercator_to_bbox_clamps_the_world_edges() -> None:
+    # +-ORIGIN_SHIFT unprojects to +-180.00000000000003, which BBox would refuse.
+    bbox = mercator_to_bbox(-ORIGIN_SHIFT, -ORIGIN_SHIFT, ORIGIN_SHIFT, ORIGIN_SHIFT)
+    assert (bbox.west, bbox.east) == (-180.0, 180.0)
+    assert -MAX_LATITUDE <= bbox.south < bbox.north <= MAX_LATITUDE

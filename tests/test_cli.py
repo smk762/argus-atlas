@@ -99,3 +99,13 @@ def test_chunk_controls_only_with_a_named_recipe(dem: Path, tmp_path: Path, monk
     job_dir = tmp_path / "jobs" / "antique-14-8650-5890"
     shown = runner.invoke(app, ["inspect", str(job_dir)])
     assert "chunk:    14/8650/5890" in shown.output and "recipe:   antique" in shown.output
+
+
+def test_chunk_input_errors_stay_input_errors_on_a_rerun(tmp_path: Path) -> None:
+    job = tmp_path / "antique-14-1-1"
+    job.mkdir()
+    (job / "job.json").write_text("{}", "utf-8")  # left by an earlier run
+    result = runner.invoke(
+        app, ["chunk", "--tile", "14/1", "--recipe", "x", "--dem", "d.tif", "--controls-only", "-o", str(job)]
+    )
+    assert result.exit_code == 2 and "z/x/y" in result.output

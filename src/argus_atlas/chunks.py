@@ -18,6 +18,7 @@ never overlap and a tile pyramid from each one can simply be laid side by side.
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -29,11 +30,10 @@ from argus_atlas.controls import CONTROL_FILES, build_controls
 from argus_atlas.georef import FANTASY_TIF, AlignmentError, verify_alignment
 from argus_atlas.hashing import sha256_file
 from argus_atlas.jobs import is_safe_id, load_sidecar, save_sidecar
-from argus_atlas.mercator import mercator_to_lonlat, tile_bounds
+from argus_atlas.mercator import intersects, mercator_to_bbox, tile_bounds
 from argus_atlas.models import (
     COMPOSITE_KIND,
     CRS,
-    MAX_LATITUDE,
     MAX_LONG_SIDE,
     MAX_ZOOM,
     SEAM_INIT_KIND,
@@ -72,13 +72,19 @@ TILE_PX = 256
 
 ProgressSink = Callable[[ProgressEvent], None]
 
+# ASCII digits only (str.isdigit() also takes '²', which int() refuses), and few enough that
+# int() and 1 << z stay cheap for any input; parse_tile caps the zoom before shifting.
+_TILE = re.compile(r"(\d{1,2})/(\d{1,9})/(\d{1,9})", re.ASCII)
+
 
 def parse_tile(text: str) -> tuple[int, int, int]:
-    """``"z/x/y"`` -> ``(z, x, y)``, each index inside zoom z's tile grid."""
-    parts = text.strip().split("/")
-    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+    """``"z/x/y"`` -> ``(z, x, y)``: a zoom no finer than :data:`MAX_ZOOM`, x and y inside its tile grid."""
+    match = _TILE.fullmatch(text.strip())
+    if match is None:
         raise AtlasError(f"tile must be z/x/y with non-negative integers, got {text!r}")
-    z, x, y = (int(p) for p in parts)
+    z, x, y = (int(p) for p in match.groups())
+    if z > MAX_ZOOM:
+        raise AtlasError(f"tile {text} is at zoom {z}, finer than {MAX_ZOOM}")
     n = 1 << z
     if x >= n or y >= n:
         raise AtlasError(f"tile {text} is outside zoom {z} (x and y must be below {n})")
@@ -118,17 +124,8 @@ def chunk_grids(
 
 
 def chunk_bbox(z: int, x: int, y: int) -> BBox:
-    """The tile's lon/lat extent (the job's AOI)."""
-    xmin, ymin, xmax, ymax = tile_bounds(z, x, y)
-    west, south = mercator_to_lonlat(xmin, ymin)
-    east, north = mercator_to_lonlat(xmax, ymax)
-    # Edge tiles sit on the antimeridian and the Mercator cap; float noise must not push past them.
-    return BBox(
-        west=max(west, -180.0),
-        south=max(south, -MAX_LATITUDE),
-        east=min(east, 180.0),
-        north=min(north, MAX_LATITUDE),
-    )
+    """The tile's lon/lat extent (the job's AOI), clamped where edge tiles meet the antimeridian or the cap."""
+    return mercator_to_bbox(*tile_bounds(z, x, y))
 
 
 def neighbour_tiles(z: int, x: int, y: int) -> list[tuple[int, int, int]]:
@@ -146,31 +143,58 @@ def chunk_job_id(recipe: str, z: int, x: int, y: int) -> str:
     return f"{recipe}-{z}-{x}-{y}"
 
 
+def _overlaps(a: ChunkRecord, b: ChunkRecord) -> bool:
+    """Whether two chunks cut tiles of a common zoom over common ground, so their archives would collide."""
+    zooms = a.z <= chunk_native_zoom(b.z, b.size) and b.z <= chunk_native_zoom(a.z, a.size)
+    return zooms and intersects(tile_bounds(a.z, a.x, a.y), tile_bounds(b.z, b.x, b.y))
+
+
 def find_neighbours(
-    root: Path, recipe: str, chunk: ChunkRecord, *, exclude: Path | None = None
+    root: Path,
+    recipe: str,
+    chunk: ChunkRecord,
+    *,
+    exclude: Path | None = None,
+    recipe_sha256: str | None = None,
 ) -> list[ChunkNeighbour]:
     """Already-cropped chunks of *recipe* around *chunk* under *root*, each checked against its sidecar.
 
+    Only chunks whose bake was resolved from *recipe* count: a chunk job re-baked
+    with other params (``bake``, ``POST /bake/stream``) is not that recipe's chunk.
     A neighbour of another size (another pixel lattice), two jobs claiming one
-    tile, or a crop whose bytes no longer match its sidecar is an error, not a skip.
+    tile, a chunk of the recipe that overlaps *chunk* (the same tile in another job,
+    or another zoom over the same ground), or a crop whose bytes no longer match
+    its sidecar is an error, not a skip. A neighbour baked from another version of
+    the recipe (its digest is not *recipe_sha256*) is used, with a warning.
     """
     wanted = {f"{z}/{x}/{y}" for z, x, y in neighbour_tiles(chunk.z, chunk.x, chunk.y)}
     found: dict[str, ChunkNeighbour] = {}
     if not root.is_dir():
         return []
-    skip = exclude.resolve() if exclude is not None else None
+    seen = {exclude.resolve()} if exclude is not None else set()
     for child in sorted(root.iterdir()):
-        if not child.is_dir() or not is_safe_id(child.name) or child.resolve() == skip:
+        if not child.is_dir() or not is_safe_id(child.name):
             continue
+        real = child.resolve()
+        if real in seen:
+            continue  # this job itself, or a second name (a symlink) for a job already looked at
+        seen.add(real)
         try:
             other = load_sidecar(child)
-        except (FileNotFoundError, AtlasError):
-            continue
+        except (OSError, AtlasError):
+            continue  # not a readable job, as in JobStore.list
         c = other.chunk
-        if c is None or c.tile not in wanted or other.recipe is None or other.recipe.recipe.name != recipe:
+        if c is None or other.recipe is None or other.recipe.recipe.name != recipe:
             continue
-        if c.image is None:
-            continue  # not baked (or its crop failed): nothing to continue from
+        if c.image is None or other.bake is None or other.bake.params.recipe != recipe:
+            continue  # not baked from this recipe (or its crop failed): nothing to continue from
+        if _overlaps(c, chunk):
+            raise AtlasError(
+                f"{other.job_id} already holds chunk {c.tile} of {recipe}, which overlaps {chunk.tile}: "
+                "their archives would share tiles"
+            )
+        if c.tile not in wanted:
+            continue
         if c.size != chunk.size:
             raise AtlasError(f"neighbour {other.job_id} ({c.tile}) is a {c.size} px chunk, this one is {chunk.size} px")
         if c.tile in found:
@@ -178,6 +202,8 @@ def find_neighbours(
         image = child / c.image.path
         if not image.is_file() or sha256_file(image) != c.image.sha256:
             raise AtlasError(f"neighbour {other.job_id}: {c.image.path} is missing or changed since its job.json")
+        if recipe_sha256 is not None and other.recipe.sha256 != recipe_sha256:
+            logger.warning("chunks.neighbour_recipe_changed", neighbour=other.job_id, tile=c.tile, recipe=recipe)
         found[c.tile] = ChunkNeighbour(
             tile=c.tile, job_id=other.job_id, image=FileRef(path=str(image.resolve()), sha256=c.image.sha256)
         )
@@ -276,6 +302,19 @@ def crop_chunk(job_dir: Path, sidecar: JobSidecar) -> tuple[FileRef, GdalCommand
     return FileRef(path=dst.name, sha256=sha256_file(dst)), command
 
 
+def _published(job_dir: Path) -> JobSidecar | None:
+    """The job's sidecar if it holds a gated crop still on disk (what neighbours and the archive use), else None."""
+    try:
+        sidecar = load_sidecar(job_dir)
+    except (OSError, AtlasError):
+        return None
+    image = sidecar.chunk.image if sidecar.chunk is not None else None
+    if image is None:
+        return None
+    path = job_dir / image.path
+    return sidecar if path.is_file() and sha256_file(path) == image.sha256 else None
+
+
 def run_chunk(
     dem: Path,
     tile: str,
@@ -299,7 +338,8 @@ def run_chunk(
 
     Neighbours are looked up under *neighbours_root* (default: the parent of
     *out_dir*, where the other chunks of a style usually live). With
-    *controls_only* it stops after the seam controls — no GPU needed.
+    *controls_only* it stops after the seam controls — no GPU needed. A re-run
+    that fails before its bake is recorded keeps the job's earlier crop published.
     """
     from argus_atlas.bake import run_bake
     from argus_atlas.recipes import recipe_params, recipe_seed
@@ -307,15 +347,33 @@ def run_chunk(
 
     z, x, y = parse_tile(tile)
     canvas, inner = chunk_grids(z, x, y, size=size, margin=margin)
+    if not controls_only and (backend is None or models_root is None):
+        raise AtlasError("baking a chunk needs a backend and a models root")
     job_id = out_dir.name
+    previous = _published(out_dir)
 
     def emit(kind: str, message: str) -> None:
         if progress is not None:
             progress(ProgressEvent(job_id=job_id, type=kind, message=message))  # type: ignore[arg-type]
 
+    def keep_previous() -> None:
+        # A re-run that fails before a new bake is recorded must not unpublish the crop (and
+        # archive) still on disk: until then the old record stays the truth about them.
+        if previous is None:
+            return
+        try:
+            if load_sidecar(out_dir).bake is None:
+                save_sidecar(out_dir, previous)
+                logger.info("chunks.kept_previous", job_id=job_id)
+        except (OSError, AtlasError):
+            pass
+
     try:
         emit("controls", f"chunk {z}/{x}/{y}: {canvas.width} px canvas ({size} px tile + {margin} px margin)")
         record = ChunkRecord(z=z, x=x, y=y, size=size, margin=margin, inner=inner)
+        root = neighbours_root if neighbours_root is not None else out_dir.parent
+        # Before anything is written, so a neighbour problem leaves this job as it was.
+        neighbours = find_neighbours(root, recipe.recipe.name, record, exclude=out_dir, recipe_sha256=recipe.sha256)
         sidecar = build_controls(
             dem,
             chunk_bbox(z, x, y),
@@ -330,20 +388,21 @@ def run_chunk(
         )
         sidecar = sidecar.model_copy(update={"recipe": recipe})
         save_sidecar(out_dir, sidecar)
-        root = neighbours_root if neighbours_root is not None else out_dir.parent
-        neighbours = find_neighbours(root, recipe.recipe.name, record, exclude=out_dir)
         sidecar = build_seams(out_dir, sidecar, neighbours)
         emit("controls", f"seams: {len(neighbours)} neighbour(s) of {recipe.recipe.name} pasted into the margin")
     except AtlasError as exc:
+        keep_previous()
         emit("error", str(exc))
         raise
     if controls_only:
         return sidecar
-    if backend is None or models_root is None:
-        raise AtlasError("baking a chunk needs a backend and a models root")
 
     params = recipe_params(recipe.recipe, seed=recipe_seed(recipe.recipe, z, x, y))
-    sidecar = run_bake(out_dir, params, backend, models_root=models_root, progress=progress)
+    try:
+        sidecar = run_bake(out_dir, params, backend, models_root=models_root, progress=progress)
+    except AtlasError:
+        keep_previous()  # run_bake has emitted the error frame
+        raise
     try:
         emit("tiles", f"cutting zoom {sidecar.zoom_range[0]}-{sidecar.zoom_range[1]} from {CHUNK_TIF}")
         record_tiles = tile_job(out_dir, sidecar)

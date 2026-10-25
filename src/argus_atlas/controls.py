@@ -151,6 +151,27 @@ def validate_layer_name(name: str) -> str:
     return name
 
 
+def check_inputs(
+    dem: Path, land: Path | None = None, layers: dict[str, Path] | None = None
+) -> tuple[Path, dict[str, Path]]:
+    """The DEM and the vector layers by name (``land`` is the layer named land), each checked to exist."""
+    dem = dem.expanduser()
+    if not dem.is_file():
+        raise AtlasError(f"DEM not found: {dem}")
+    sources: dict[str, Path] = {}
+    if land is not None:
+        sources["land"] = land
+    for name, path in (layers or {}).items():
+        if validate_layer_name(name) in sources:
+            raise AtlasError(f"layer {name!r} given twice")
+        sources[name] = path
+    for name, path in sources.items():
+        path = sources[name] = path.expanduser()
+        if not path.is_file():
+            raise AtlasError(f"{name} layer file not found: {path}")
+    return dem, sources
+
+
 def build_controls(
     dem: Path,
     bbox: BBox,
@@ -186,20 +207,7 @@ def build_controls(
     started = time.perf_counter()
     if grid is not None and (long_side is not None or resolution is not None):
         raise AtlasError("a preplanned grid takes no --long-side or --resolution")
-    dem = dem.expanduser()
-    if not dem.is_file():
-        raise AtlasError(f"DEM not found: {dem}")
-    sources: dict[str, Path] = {}
-    if land is not None:
-        sources["land"] = land
-    for name, path in (layers or {}).items():
-        if validate_layer_name(name) in sources:
-            raise AtlasError(f"layer {name!r} given twice")
-        sources[name] = path
-    for name, path in sources.items():
-        path = sources[name] = path.expanduser()
-        if not path.is_file():
-            raise AtlasError(f"{name} layer file not found: {path}")
+    dem, sources = check_inputs(dem, land, layers)
     job_id = require_safe_id(job_id or out_dir.name, "job id")
     gdal_ops.require_gdal()
     paintable = sea_level is not None or any(n in COMPOSITE_PALETTE for n in sources)

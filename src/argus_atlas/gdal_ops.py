@@ -32,6 +32,11 @@ GDAL_TOOLS: tuple[str, ...] = ("gdalinfo", "gdalwarp", "gdaldem", "gdal_rasteriz
 TILER_CANDIDATES: tuple[str, ...] = ("gdal2tiles.py", "gdal2tiles")
 # Same for the raster calculator used to paint the composite control.
 CALC_CANDIDATES: tuple[str, ...] = ("gdal_calc.py", "gdal_calc")
+# The seam blend of a chunk also needs the distance and gap-filling scripts (same package as gdal_calc).
+PROXIMITY_CANDIDATES: tuple[str, ...] = ("gdal_proximity.py", "gdal_proximity")
+FILLNODATA_CANDIDATES: tuple[str, ...] = ("gdal_fillnodata.py", "gdal_fillnodata")
+# What gdal_proximity writes beyond its -maxdist (UInt16 output), so "far" is one comparison.
+PROXIMITY_FAR = 65535
 
 DEFAULT_TIMEOUT = 900.0
 
@@ -77,7 +82,12 @@ def find_tiler() -> str | None:
 
 def find_calc() -> str | None:
     """Path of ``gdal_calc.py`` (or ``gdal_calc``), or ``None``."""
-    for name in CALC_CANDIDATES:
+    return find_script(CALC_CANDIDATES)
+
+
+def find_script(candidates: tuple[str, ...]) -> str | None:
+    """Path of the first of *candidates* on PATH (GDAL's Python scripts, with or without ``.py``), or ``None``."""
+    for name in candidates:
         path = shutil.which(name)
         if path:
             return path
@@ -102,9 +112,9 @@ def run(argv: list[str], *, timeout: float = DEFAULT_TIMEOUT, cwd: Path | None =
     return GdalCommand(tool=tool, argv=list(argv))
 
 
-def gdalinfo_json(path: Path) -> dict:
-    """``gdalinfo -json`` of *path* as a dict."""
-    argv = ["gdalinfo", "-json", str(path)]
+def gdalinfo_json(path: Path, *, stats: bool = False) -> dict:
+    """``gdalinfo -json`` of *path* as a dict; *stats* adds exact per-band statistics (NoData excluded)."""
+    argv = ["gdalinfo", "-json", *(["-stats"] if stats else []), str(path)]
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=120, check=False)
     except FileNotFoundError as exc:
@@ -419,6 +429,98 @@ def tiles_argv(tiler: str, tif: Path, out_dir: Path, zmin: int, zmax: int) -> li
         str(tif),
         str(out_dir),
     ]
+
+
+def calc_argv(
+    calc: str,
+    inputs: dict[str, Path],
+    expr: str,
+    dst: Path,
+    *,
+    bands: dict[str, int] | None = None,
+    all_bands: str | None = None,
+    out_type: str = "Byte",
+    nodata: float | None = None,
+) -> list[str]:
+    """One ``gdal_calc`` expression over lettered inputs into a GeoTIFF.
+
+    Input NoData is ignored (``--hideNoData``) so every expression sees raw values;
+    *nodata* only flags the output. *bands* picks a band per letter; *all_bands*
+    runs the expression once per band of that letter's input.
+    """
+    argv = [calc, "--quiet", "--overwrite", "--hideNoData"]
+    for letter, path in inputs.items():
+        argv += [f"-{letter}", str(path)]
+        if bands and letter in bands:
+            argv.append(f"--{letter}_band={bands[letter]}")
+    if all_bands:
+        argv.append(f"--allBands={all_bands}")
+    flag = "none" if nodata is None else repr(nodata)
+    argv += ["--calc", expr, "--type", out_type, f"--NoDataValue={flag}"]
+    return argv + ["--co", "COMPRESS=DEFLATE", "--outfile", str(dst)]
+
+
+def proximity_argv(tool: str, src: Path, dst: Path, *, values: int, maxdist: int) -> list[str]:
+    """Pixel distance from every pixel to the nearest pixel of *src* equal to *values* (0 on them).
+
+    Pixels farther than *maxdist* get :data:`PROXIMITY_FAR`.
+    """
+    return [
+        tool,
+        "-q",
+        str(src),
+        str(dst),
+        "-values",
+        str(values),
+        "-distunits",
+        "PIXEL",
+        "-maxdist",
+        str(maxdist),
+        "-nodata",
+        str(PROXIMITY_FAR),
+        "-ot",
+        "UInt16",
+        "-co",
+        "COMPRESS=DEFLATE",
+    ]
+
+
+def fillnodata_argv(tool: str, src: Path, dst: Path, *, maxdist: int) -> list[str]:
+    """Spread the valid pixels of *src* into its NoData up to *maxdist* px (inverse-distance), no smoothing."""
+    return [tool, "-q", "-md", str(maxdist), "-si", "0", "-of", "GTiff", str(src), str(dst)]
+
+
+def resize_argv(src: Path, dst: Path, width: int, height: int, *, method: str) -> list[str]:
+    """Resample *src* to *width* x *height* px over the same extent (``average`` down, a spline up)."""
+    return ["gdal_translate", "-of", "GTiff", "-outsize", str(width), str(height), "-r", method, str(src), str(dst)]
+
+
+def to_tif_argv(src: Path, dst: Path, *, description: str | None = None) -> list[str]:
+    """Write *src* (a VRT stack) as a Byte GeoTIFF, with the bake payload in ``TIFFTAG_IMAGEDESCRIPTION``."""
+    tags = (
+        ["-mo", f"TIFFTAG_IMAGEDESCRIPTION={description}", "-mo", "TIFFTAG_SOFTWARE=argus-atlas"] if description else []
+    )
+    # A stack of single-band rasters has no colour interpretation; label it RGB like a stamped fantasy.tif,
+    # or gdalbuildvrt refuses to mosaic it with unblended chunks.
+    return [
+        "gdal_translate",
+        "-of",
+        "GTiff",
+        "-ot",
+        "Byte",
+        "-colorinterp",
+        "red,green,blue",
+        *tags,
+        "-co",
+        "COMPRESS=DEFLATE",
+        str(src),
+        str(dst),
+    ]
+
+
+def stack_argv(bands: list[Path], dst_vrt: Path) -> list[str]:
+    """One VRT whose bands are the single-band rasters *bands*, in order."""
+    return ["gdalbuildvrt", "-q", "-separate", str(dst_vrt), *map(str, bands)]
 
 
 def strip_aux(path: Path) -> None:

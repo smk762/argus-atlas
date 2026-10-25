@@ -316,6 +316,20 @@ class ChunkNeighbour(BaseModel):
     image: FileRef  # its fantasy_chunk.tif, absolute path + digest
 
 
+class SeamBlend(BaseModel):
+    """How a chunk's painted canvas was matched to its neighbours before the crop.
+
+    ``offset`` is the per-band (RGB) tone shift applied to the whole canvas so its
+    strip along the neighbours matches theirs; ``feather`` is how far into the tile
+    the remaining difference at the seam was faded out. ``image`` is the matched
+    canvas the crop was cut from (``fantasy.tif`` itself stays as painted).
+    """
+
+    offset: list[float]
+    feather: int = Field(ge=0)
+    image: FileRef
+
+
 class ChunkRecord(BaseModel):
     """A job baked as one XYZ tile: the canvas is the tile plus *margin* px on every side.
 
@@ -332,6 +346,12 @@ class ChunkRecord(BaseModel):
     inner: Grid
     neighbours: list[ChunkNeighbour] = Field(default_factory=list)
     image: FileRef | None = None
+    # Seam settings: px the seam mask fades over on the neighbours' side (0 = hard edge), px the
+    # pixel correction fades over into the tile (0 = none), and whether the tone is matched.
+    mask_feather: int = Field(default=32, ge=0)
+    feather: int = Field(default=64, ge=0)
+    tone: bool = True
+    blend: SeamBlend | None = None
 
     @property
     def tile(self) -> str:

@@ -342,6 +342,13 @@ def chunk(
     ),
     size: int = Option(1024, "--size", help="Tile side in px: 256, 512 or 1024 (native zoom = z + log2(size/256))"),
     margin: int = Option(128, "--margin", help="Px of neighbour context on every side, a multiple of 32"),
+    mask_feather: int = Option(
+        32, "--mask-feather", help="Px the seam mask fades over on the neighbours' side, up to the margin (0 = hard)"
+    ),
+    feather: int = Option(
+        64, "--feather", help="Px into the tile the remaining seam difference fades over, up to half the tile (0 = off)"
+    ),
+    tone: bool = Option(True, "--tone/--no-tone", help="Shift the chunk's colours to match its neighbours"),
     land: Path | None = Option(None, "--land", help="Land polygon file (any OGR format): the layer named 'land'"),
     layer: list[str] = Option([], "--layer", help="name=path vector layer, as for `controls` (repeatable)"),
     sea_level: float | None = Option(
@@ -355,12 +362,12 @@ def chunk(
     models_dir: Path | None = Option(None, "--models-dir", help="Default $ATLAS_MODELS_DIR"),
     comfyui_url: str | None = Option(None, "--comfyui-url", help="Default $COMFYUI_BASE_URL"),
 ) -> None:
-    """One chunk end to end: controls -> seams from baked neighbours -> bake -> crop -> tiles, styled by a recipe."""
+    """One chunk end to end: controls -> seams from baked neighbours -> bake -> blend -> crop -> tiles, by a recipe."""
     if not controls_only and not config.bake_allowed():
         _fail(f"refusing to bake: set {config.ENV_ALLOW_BAKE}=1 (or pass --controls-only)", EXIT_REFUSED)
 
     from argus_atlas import gdal_ops
-    from argus_atlas.chunks import chunk_job_id, parse_tile, run_chunk, validate_chunk
+    from argus_atlas.chunks import chunk_job_id, parse_tile, run_chunk, validate_chunk, validate_seams
     from argus_atlas.controls import check_inputs
     from argus_atlas.jobs import require_safe_id
     from argus_atlas.recipes import load_recipe, recipe_record, recipe_workflow
@@ -370,6 +377,7 @@ def chunk(
     try:
         z, x, y = parse_tile(tile)
         validate_chunk(z, size, margin)
+        validate_seams(size, margin, mask_feather=mask_feather, feather=feather)
         loaded, recipe_path = load_recipe(recipe, recipes_root=config.recipes_dir())
         workflow = None if controls_only else recipe_workflow(loaded, recipe_path)
         layers = _parse_layers(layer)
@@ -402,6 +410,9 @@ def chunk(
             resampling=resampling,
             size=size,
             margin=margin,
+            mask_feather=mask_feather,
+            feather=feather,
+            tone=tone,
             controls_only=controls_only,
             progress=lambda ev: typer.echo(f"[{ev.type}] {ev.message}", err=ev.type == "error"),
         )
@@ -450,6 +461,8 @@ def inspect(
         near = ", ".join(n.tile for n in c.neighbours) or "none"
         typer.echo(f"  chunk:    {c.tile}, {c.size} px + {c.margin} px margin, neighbours: {near}")
         typer.echo(f"            crop: {c.image.path if c.image else 'not yet'}")
+        if c.blend:
+            typer.echo(f"            blend: tone offset {c.blend.offset}, seam feather {c.blend.feather} px")
     if sidecar.recipe:
         typer.echo(f"  recipe:   {sidecar.recipe.recipe.name} ({sidecar.recipe.sha256[:12]}…)")
     if sidecar.tiles:

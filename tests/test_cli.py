@@ -109,3 +109,12 @@ def test_chunk_input_errors_stay_input_errors_on_a_rerun(tmp_path: Path) -> None
         app, ["chunk", "--tile", "14/1", "--recipe", "x", "--dem", "d.tif", "--controls-only", "-o", str(job)]
     )
     assert result.exit_code == 2 and "z/x/y" in result.output
+
+
+def test_chunk_refuses_a_feather_past_half_the_tile(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        ["chunk", "--tile", "14/1/1", "--recipe", "x", "--dem", "d.tif", "--controls-only", "--size", "256"]
+        + ["--margin", "32", "--feather", "200", "-o", str(tmp_path / "j")],
+    )
+    assert result.exit_code == 2 and "half the tile" in result.output

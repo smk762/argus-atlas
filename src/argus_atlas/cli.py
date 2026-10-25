@@ -1,4 +1,4 @@
-"""argus-atlas CLI — ``doctor``, ``controls``, ``bake``, ``tiles``, ``inspect``, ``serve``.
+"""argus-atlas CLI — ``doctor``, ``osm``, ``controls``, ``bake``, ``tiles``, ``chunk``, ``inspect``, ``serve``.
 
 Everything works without the HTTP server or studio: ``controls`` needs only
 GDAL, ``bake`` needs a reachable ComfyUI and ``ATLAS_ALLOW_BAKE=1``, ``tiles``
@@ -55,6 +55,17 @@ def _fail(message: str, code: int = 1) -> None:
 def _job_dir_of(path: Path) -> Path:
     """Accept a job dir or a file inside it (``jobs/aoi-1/fantasy.tif``)."""
     return path if path.is_dir() else path.parent
+
+
+def _parse_layers(items: list[str]) -> dict[str, Path]:
+    """``--layer name=path`` options -> ``{name: path}``."""
+    layers: dict[str, Path] = {}
+    for item in items:
+        name, sep, path = item.partition("=")
+        if not sep or not name or not path:
+            raise AtlasError(f"--layer expects name=path, got {item!r}")
+        layers[name] = Path(path)
+    return layers
 
 
 @app.command()
@@ -149,12 +160,7 @@ def controls(
     from argus_atlas.controls import build_controls
 
     try:
-        layers: dict[str, Path] = {}
-        for item in layer:
-            name, sep, path = item.partition("=")
-            if not sep or not name or not path:
-                raise AtlasError(f"--layer expects name=path, got {item!r}")
-            layers[name] = Path(path)
+        layers = _parse_layers(layer)
         aoi = BBox.parse(bbox)
         sidecar = build_controls(
             dem,
@@ -296,11 +302,10 @@ def tiles(
     min_zoom: int | None = Option(None, "--min-zoom", min=0),
     max_zoom: int | None = Option(None, "--max-zoom", min=0, help="Never finer than the canvas's native zoom"),
 ) -> None:
-    """Cut XYZ tiles from the aligned GeoTIFF (native-2..native) and pack them as PMTiles."""
-    from argus_atlas import gdal_ops
-    from argus_atlas.georef import FANTASY_TIF, AlignmentError, verify_alignment
-    from argus_atlas.jobs import load_sidecar, save_sidecar
-    from argus_atlas.tiles import FANTASY_PMTILES, bake_metadata, build_tiles
+    """Cut XYZ tiles from the aligned GeoTIFF (native-2..native; a chunk's own zoom..native) and pack them as PMTiles."""
+    from argus_atlas.georef import AlignmentError
+    from argus_atlas.jobs import load_sidecar
+    from argus_atlas.tiles import FANTASY_PMTILES, NotTileableError, tile_job
 
     job_dir = _job_dir_of(source)
     try:
@@ -310,33 +315,115 @@ def tiles(
         return
     if sidecar.bake is None or not sidecar.bake.aligned:
         _fail(f"{sidecar.job_id} has no aligned GeoTIFF — bake it first (or its alignment gate failed)", EXIT_INPUT)
-    tif = job_dir / FANTASY_TIF
-    zmin, zmax = sidecar.zoom_range
-    zoom = (min_zoom if min_zoom is not None else zmin, max_zoom if max_zoom is not None else zmax)
     try:
-        gdal_ops.require_gdal()
-        verify_alignment(tif, sidecar.grid)  # the gate again, right before tiles are written
-        record = build_tiles(
-            tif,
-            out or job_dir / FANTASY_PMTILES,
-            sidecar.grid,
-            zoom_range=zoom,
-            native_zoom=sidecar.native_zoom,
-            name=sidecar.job_id,
-            work_dir=job_dir,
-            extra_metadata=bake_metadata(sidecar),
-        )
+        record = tile_job(job_dir, sidecar, out=out, min_zoom=min_zoom, max_zoom=max_zoom)
     except AlignmentError as exc:
         _fail(f"alignment gate failed, no tiles written: {exc}", 1)
+        return
+    except NotTileableError as exc:  # e.g. a chunk whose crop failed: an input state, like an unbaked job
+        _fail(str(exc), EXIT_INPUT)
         return
     except AtlasError as exc:
         _fail(str(exc), 1)
         return
-    sidecar.tiles = record
-    save_sidecar(job_dir, sidecar)
     typer.echo(
         f"{sidecar.job_id}: {record.n_tiles} tiles, zoom {record.min_zoom}-{record.max_zoom} -> {out or job_dir / FANTASY_PMTILES}"
     )
+
+
+@app.command()
+def chunk(
+    tile: str = Option(..., "--tile", "-t", help="XYZ tile z/x/y to bake as one chunk"),
+    recipe: str = Option(..., "--recipe", "-r", help="Recipe file, or a name under $ATLAS_RECIPES_DIR"),
+    dem: Path = Option(..., "--dem", help="Source DEM (GeoTIFF or VRT) covering the tile and its margin"),
+    out: Path | None = Option(None, "--out", "-o", help="Job directory (default $ATLAS_JOBS_DIR/<recipe>-<z>-<x>-<y>)"),
+    neighbours: Path | None = Option(
+        None, "--neighbours", help="Where the recipe's other chunk jobs live (default: the parent of --out)"
+    ),
+    size: int = Option(1024, "--size", help="Tile side in px: 256, 512 or 1024 (native zoom = z + log2(size/256))"),
+    margin: int = Option(128, "--margin", help="Px of neighbour context on every side, a multiple of 32"),
+    mask_feather: int = Option(
+        32, "--mask-feather", help="Px the seam mask fades over on the neighbours' side, up to the margin (0 = hard)"
+    ),
+    feather: int = Option(
+        64, "--feather", help="Px into the tile the remaining seam difference fades over, up to half the tile (0 = off)"
+    ),
+    tone: bool = Option(True, "--tone/--no-tone", help="Shift the chunk's colours to match its neighbours"),
+    land: Path | None = Option(None, "--land", help="Land polygon file (any OGR format): the layer named 'land'"),
+    layer: list[str] = Option([], "--layer", help="name=path vector layer, as for `controls` (repeatable)"),
+    sea_level: float | None = Option(
+        None, "--sea-level", help="Metres: add a 'sea' mask of DEM cells at or below this"
+    ),
+    composite: bool = Option(True, "--composite/--no-composite", help="Paint composite.png from the known layers"),
+    resampling: str | None = Option(None, "--resampling", help="gdalwarp method; default: auto by upsampling ratio"),
+    controls_only: bool = Option(
+        False, "--controls-only", help="Stop after the controls and seam controls (no GPU, no ATLAS_ALLOW_BAKE)"
+    ),
+    models_dir: Path | None = Option(None, "--models-dir", help="Default $ATLAS_MODELS_DIR"),
+    comfyui_url: str | None = Option(None, "--comfyui-url", help="Default $COMFYUI_BASE_URL"),
+) -> None:
+    """One chunk end to end: controls -> seams from baked neighbours -> bake -> blend -> crop -> tiles, by a recipe."""
+    if not controls_only and not config.bake_allowed():
+        _fail(f"refusing to bake: set {config.ENV_ALLOW_BAKE}=1 (or pass --controls-only)", EXIT_REFUSED)
+
+    from argus_atlas import gdal_ops
+    from argus_atlas.chunks import chunk_job_id, parse_tile, run_chunk, validate_chunk, validate_seams
+    from argus_atlas.controls import check_inputs
+    from argus_atlas.jobs import require_safe_id
+    from argus_atlas.recipes import load_recipe, recipe_record, recipe_workflow
+
+    # The inputs first, before anything is written: a mistake in them is EXIT_INPUT whatever the job
+    # dir already holds, and anything run_chunk raises after that is a runtime failure.
+    try:
+        z, x, y = parse_tile(tile)
+        validate_chunk(z, size, margin)
+        validate_seams(size, margin, mask_feather=mask_feather, feather=feather)
+        loaded, recipe_path = load_recipe(recipe, recipes_root=config.recipes_dir())
+        workflow = None if controls_only else recipe_workflow(loaded, recipe_path)
+        layers = _parse_layers(layer)
+        check_inputs(dem, land, layers)
+        if resampling is not None and resampling not in gdal_ops.RESAMPLING_METHODS:
+            raise AtlasError(f"unknown resampling {resampling!r}; choose from {', '.join(gdal_ops.RESAMPLING_METHODS)}")
+        job_dir = out if out is not None else config.jobs_dir() / chunk_job_id(loaded.name, z, x, y)
+        require_safe_id(job_dir.name)
+    except AtlasError as exc:
+        _fail(f"chunk failed: {exc}", EXIT_INPUT)
+        return
+    try:
+        backend = None
+        if workflow is not None:
+            from argus_atlas.backends import backend_from_env
+
+            backend = backend_from_env(workflow=workflow, base_url=comfyui_url)
+        sidecar = run_chunk(
+            dem,
+            tile,
+            recipe_record(loaded),
+            job_dir,
+            backend=backend,
+            models_root=config.models_dir(models_dir),
+            neighbours_root=neighbours,
+            land=land,
+            layers=layers,
+            sea_level=sea_level,
+            composite=composite,
+            resampling=resampling,
+            size=size,
+            margin=margin,
+            mask_feather=mask_feather,
+            feather=feather,
+            tone=tone,
+            controls_only=controls_only,
+            progress=lambda ev: typer.echo(f"[{ev.type}] {ev.message}", err=ev.type == "error"),
+        )
+    except FileNotFoundError as exc:
+        _fail(str(exc), EXIT_INPUT)
+        return
+    except AtlasError as exc:  # BackendError and GdalError included
+        _fail(f"chunk failed: {exc}", 1)
+        return
+    timing = ", ".join(f"{k} {v:.1f}s" for k, v in sidecar.timings.items())
+    typer.echo(f"{sidecar.job_id}: chunk {tile} [{sidecar.status}] in {job_dir} ({timing})")
 
 
 @app.command()
@@ -369,9 +456,20 @@ def inspect(
             f"  bake:     {b.backend} {b.engine_version}, {b.checkpoint.name}{lora}, seed {b.params.seed}, denoise {b.params.denoise}"
         )
         typer.echo(f"            aligned={b.aligned}" + (f" error={b.error}" if b.error else ""))
+    if sidecar.chunk:
+        c = sidecar.chunk
+        near = ", ".join(n.tile for n in c.neighbours) or "none"
+        typer.echo(f"  chunk:    {c.tile}, {c.size} px + {c.margin} px margin, neighbours: {near}")
+        typer.echo(f"            crop: {c.image.path if c.image else 'not yet'}")
+        if c.blend:
+            typer.echo(f"            blend: tone offset {c.blend.offset}, seam feather {c.blend.feather} px")
+    if sidecar.recipe:
+        typer.echo(f"  recipe:   {sidecar.recipe.recipe.name} ({sidecar.recipe.sha256[:12]}…)")
     if sidecar.tiles:
         t = sidecar.tiles
         typer.echo(f"  tiles:    {t.archive.path} — {t.n_tiles} tiles, zoom {t.min_zoom}-{t.max_zoom} ({t.packer})")
+    if sidecar.timings:
+        typer.echo("  timings:  " + ", ".join(f"{k} {v:.2f}s" for k, v in sidecar.timings.items()))
 
 
 @app.command()

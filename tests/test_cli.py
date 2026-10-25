@@ -68,3 +68,53 @@ def test_controls_bad_bbox_is_input_error(tmp_path: Path) -> None:
         app, ["controls", "--dem", str(tmp_path / "x.tif"), "--bbox", "1,2,3", "--out", str(tmp_path / "j")]
     )
     assert result.exit_code == 2 and "west,south,east,north" in result.output
+
+
+def test_chunk_refuses_to_bake_without_allow_flag(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["chunk", "--tile", "14/1/1", "--recipe", "x", "--dem", str(tmp_path / "d.tif")])
+    assert result.exit_code == 3 and "--controls-only" in result.output
+
+
+def test_chunk_bad_tile_is_an_input_error(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        ["chunk", "--tile", "14/1", "--recipe", "x", "--dem", "d.tif", "--controls-only", "-o", str(tmp_path / "j")],
+    )
+    assert result.exit_code == 2 and "z/x/y" in result.output
+
+
+@requires_gdal
+def test_chunk_controls_only_with_a_named_recipe(dem: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recipes = tmp_path / "recipes"
+    recipes.mkdir()
+    (recipes / "antique.json").write_text(json.dumps({"name": "antique", "preset": "antique", "checkpoint": "c"}))
+    monkeypatch.setenv("ATLAS_RECIPES_DIR", str(recipes))
+    monkeypatch.setenv("ATLAS_JOBS_DIR", str(tmp_path / "jobs"))
+    result = runner.invoke(
+        app,
+        ["chunk", "--tile", "14/8650/5890", "--recipe", "antique", "--dem", str(dem), "--size", "256", "--margin", "32"]
+        + ["--controls-only"],
+    )
+    assert result.exit_code == 0, result.output
+    job_dir = tmp_path / "jobs" / "antique-14-8650-5890"
+    shown = runner.invoke(app, ["inspect", str(job_dir)])
+    assert "chunk:    14/8650/5890" in shown.output and "recipe:   antique" in shown.output
+
+
+def test_chunk_input_errors_stay_input_errors_on_a_rerun(tmp_path: Path) -> None:
+    job = tmp_path / "antique-14-1-1"
+    job.mkdir()
+    (job / "job.json").write_text("{}", "utf-8")  # left by an earlier run
+    result = runner.invoke(
+        app, ["chunk", "--tile", "14/1", "--recipe", "x", "--dem", "d.tif", "--controls-only", "-o", str(job)]
+    )
+    assert result.exit_code == 2 and "z/x/y" in result.output
+
+
+def test_chunk_refuses_a_feather_past_half_the_tile(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        ["chunk", "--tile", "14/1/1", "--recipe", "x", "--dem", "d.tif", "--controls-only", "--size", "256"]
+        + ["--margin", "32", "--feather", "200", "-o", str(tmp_path / "j")],
+    )
+    assert result.exit_code == 2 and "half the tile" in result.output

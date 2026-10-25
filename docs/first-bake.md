@@ -52,6 +52,14 @@ sed -i 's|diffusers_xl_depth_full.safetensors|controlnet-union-sdxl/diffusion_py
 
 Then `--workflow /srv/argus/atlas-nolora.json` (or `ATLAS_WORKFLOW=`). The `strength` (0.65) and `end_percent` (0.8) in that node are the ControlNet knobs; they live in the template on purpose.
 
+`chunk` reads neither `--workflow` nor `ATLAS_WORKFLOW` (here they name non-seam templates); it bakes with the recipe's `workflow`. Patch the seam template the same way and name the copy in the recipe, as a path relative to the recipe file:
+
+```bash
+python -c "import argus_atlas.backends.workflow as w, json; print(json.dumps(w.example_template(w.EXAMPLE_TEMPLATE_SEAM_NOLORA), indent=2))" > /srv/argus/recipes/atlas-seam-nolora.json
+sed -i 's|diffusers_xl_depth_full.safetensors|controlnet-union-sdxl/diffusion_pytorch_model_promax.safetensors|' /srv/argus/recipes/atlas-seam-nolora.json
+# then in /srv/argus/recipes/antique.json (mounted as ATLAS_RECIPES_DIR): "workflow": "atlas-seam-nolora.json"
+```
+
 ## Run it (CLI, no studio)
 
 ```bash
@@ -242,6 +250,24 @@ Sheets: [`img/wa-rockingham.jpg`](img/wa-rockingham.jpg), [`img/wa-rottnest.jpg`
 **Golden six** (`recommended` in `argus_atlas.presets`, the menu `flow.html?lock=1` shows): `antique`, `imhof`, `tolkien`, `watercolor`, `minecraft`, `pixel` — each held up on all four AOIs. `cyberpunk` is kept but not recommended: spectacular over Rockingham/Kwinana, flat on Rottnest and the Stirling bush because there is no road grid to turn neon. Two tunings came out of the sheets: "no compass rose" in the positive prompt does nothing (antique and tolkien grew roses on Rockingham), so compass rose and cartouche are in those presets' negatives now (antique also gets sea monster and ship; on tolkien those two flattened the inked sea, so it keeps only the rose terms) — verified on `wa-rockingham-*-v2`; and the sea mask is what makes islands and sounds read as water in every style.
 
 Every output of the series carries its request: `exiftool`/Pillow read the PNG's ImageDescription, `gdalinfo` shows `TIFFTAG_IMAGEDESCRIPTION` on the GeoTIFF, and the PMTiles metadata has `argus_bake` — checked on `wa-albany-tolkien`. Rank by preset, seed or AOI from the files alone.
+
+## Albany 3x3 chunk series (25 Oct)
+
+Nine z12 chunks around Albany (`12/3388..3390/2473..2475`, 1024 px + 128 px margin, native z14, ~24 km across) baked with `argus-atlas chunk` row by row from the `antique` recipe (Juggernaut, union ControlNet via a patched seam template, OSM water/rivers/roads/forest/urban at zoom 13, `--sea-level 0`). Each chunk took 45–55 s end to end (generate 23–40 s; verify 4–13 s because each container re-hashes the checkpoint).
+
+Seams measured on the mosaic as the mean RGB step across a chunk edge divided by the step between adjacent pixels inside a chunk (1.0 = invisible), same seeds in every pass:
+
+| pass | seam step | interior step | ratio |
+|---|---|---|---|
+| no neighbours (`--neighbours` an empty path) | 11.33 | 1.81 | 6.3 |
+| neighbours pasted, hard mask, no blend | 8.60 | 1.93 | 4.5 |
+| + soft mask, tone, full-res residual | 3.60 | 1.94 | 1.9 (streaks along coasts) |
+| + residual low-passed only | 6.90 | 1.90 | 3.6 (no streaks, line back) |
+| + two-scale residual (shipped defaults) | 3.76 | 1.91 | 2.0 (no streaks, faint line) |
+
+Rivers and coastlines continue across every seam once neighbours are pasted; the blend removes the colour step in open water and most of the line. What is left is model variance between chunks: two neighbours can still be painted in a slightly different hand (paper-like vs warm relief), which no pixel blend fixes. Jobs: `/home/smk/argus/atlas-jobs/albany-3x3*`.
+
+Two things only a real bake caught: `gdal_proximity`/`gdal_fillnodata` write scratch files into the working directory (`/app` in the image is not writable by `-u $(id -u)`; the tests run as root), and a stacked VRT has no colour interpretation, so `gdalbuildvrt` refused to mosaic blended crops with the first, unblended one.
 
 ## Review the output
 

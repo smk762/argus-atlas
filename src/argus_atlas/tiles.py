@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -22,17 +23,23 @@ import structlog
 
 from argus_atlas import gdal_ops
 from argus_atlas.hashing import sha256_file
-from argus_atlas.mercator import intersects, mercator_to_bbox, tile_bounds
-from argus_atlas.models import AtlasError, FileRef, Grid, TilesRecord
+from argus_atlas.mercator import intersects, mercator_to_bbox, resolution_at_zoom, tile_bounds
+from argus_atlas.models import AtlasError, FileRef, Grid, JobSidecar, TilesRecord
 
 logger = structlog.get_logger()
 
 PACKER_PYTHON = "pmtiles (python library)"
+# A chunk sits exactly on tile edges; anything overlapping it by under half a pixel is a tiler sliver.
+CHUNK_SLIVER_PX = 0.5
 FANTASY_PMTILES = "fantasy.pmtiles"
 
 
 class TilesError(AtlasError):
     """Tiling or packing failed."""
+
+
+class NotTileableError(TilesError):
+    """The job has nothing gated to tile yet: no aligned bake, or a chunk whose crop failed."""
 
 
 def packer_status() -> dict[str, str | None]:
@@ -56,9 +63,17 @@ def clip_zoom_range(requested: tuple[int, int], native: int) -> tuple[int, int]:
     return zmin, zmax
 
 
-def collect_xyz(xyz_dir: Path, grid: Grid, zmin: int, zmax: int) -> list[tuple[int, int, int, Path]]:
+def collect_xyz(
+    xyz_dir: Path, grid: Grid, zmin: int, zmax: int, *, sliver_px: float = 0.0
+) -> list[tuple[int, int, int, Path]]:
     """``(z, x, y, path)`` for every tile under *xyz_dir*, verified to be within
-    the zoom range and to intersect the canvas."""
+    the zoom range and to intersect the canvas.
+
+    With *sliver_px*, a tile that overlaps the canvas by less than that many of
+    its own pixels is dropped instead: gdal2tiles adds such slivers when a raster
+    edge falls exactly on a tile edge (every chunk), and in a mosaic of chunks
+    they would overwrite the neighbour's real tile.
+    """
     tiles: list[tuple[int, int, int, Path]] = []
     for z_dir in sorted(p for p in xyz_dir.iterdir() if p.is_dir() and p.name.isdigit()):
         z = int(z_dir.name)
@@ -68,7 +83,11 @@ def collect_xyz(xyz_dir: Path, grid: Grid, zmin: int, zmax: int) -> list[tuple[i
             x = int(x_dir.name)
             for tile in sorted(x_dir.glob("*.png")):
                 y = int(tile.stem)
-                if not intersects(tile_bounds(z, x, y), grid.bounds):
+                bounds = tile_bounds(z, x, y)
+                if sliver_px and not intersects(bounds, grid.bounds, eps=sliver_px * resolution_at_zoom(z)):
+                    logger.debug("tiles.sliver_dropped", tile=f"{z}/{x}/{y}")
+                    continue
+                if not intersects(bounds, grid.bounds):
                     raise TilesError(f"tile {z}/{x}/{y} lies outside the canvas")
                 tiles.append((z, x, y, tile))
     if not tiles:
@@ -131,8 +150,10 @@ def build_tiles(
     name: str,
     work_dir: Path | None = None,
     extra_metadata: dict | None = None,
+    sliver_px: float = 0.0,
 ) -> TilesRecord:
-    """Tile *tif* for *zoom_range* with gdal2tiles and pack the result at *out*."""
+    """Tile *tif* for *zoom_range* with gdal2tiles and pack the result at *out*
+    (*sliver_px*: see :func:`collect_xyz`)."""
     zmin, zmax = clip_zoom_range(zoom_range, native_zoom)
     tiler = gdal_ops.find_tiler()
     if tiler is None:
@@ -144,7 +165,7 @@ def build_tiles(
     xyz_dir = Path(tmp_root) / "xyz"
     try:
         gdal_ops.run(gdal_ops.tiles_argv(tiler, tif, xyz_dir, zmin, zmax))
-        tiles = collect_xyz(xyz_dir, grid, zmin, zmax)
+        tiles = collect_xyz(xyz_dir, grid, zmin, zmax, sliver_px=sliver_px)
         n = pack_pmtiles(tiles, out, grid, name=name, extra_metadata=extra_metadata)
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
@@ -160,6 +181,61 @@ def build_tiles(
         packer=PACKER_PYTHON,
         completed_at=datetime.now(UTC).isoformat(timespec="seconds"),
     )
+
+
+def tile_source(job_dir: Path, sidecar: JobSidecar) -> tuple[Path, Grid]:
+    """The raster to tile and the grid it must sit on: the cropped tile of a chunk job, else ``fantasy.tif``."""
+    from argus_atlas.georef import FANTASY_TIF
+
+    if sidecar.bake is None or not sidecar.bake.aligned or sidecar.bake.geotiff is None:
+        raise NotTileableError(
+            f"{sidecar.job_id} has no aligned GeoTIFF — bake it first (or its alignment gate failed)"
+        )
+    if sidecar.chunk is None:
+        return job_dir / FANTASY_TIF, sidecar.grid
+    if sidecar.chunk.image is None:
+        raise NotTileableError(f"chunk {sidecar.chunk.tile} of {sidecar.job_id} was never cropped — bake it again")
+    return job_dir / sidecar.chunk.image.path, sidecar.chunk.inner
+
+
+def tile_job(
+    job_dir: Path,
+    sidecar: JobSidecar,
+    *,
+    out: Path | None = None,
+    min_zoom: int | None = None,
+    max_zoom: int | None = None,
+) -> TilesRecord:
+    """Gate the job's raster again, cut its archive, and record it (and its timing) in ``job.json``."""
+    from argus_atlas.georef import verify_alignment
+    from argus_atlas.jobs import save_sidecar
+
+    started = time.perf_counter()
+    tif, grid = tile_source(job_dir, sidecar)
+    zmin, zmax = sidecar.zoom_range
+    zoom = (min_zoom if min_zoom is not None else zmin, max_zoom if max_zoom is not None else zmax)
+    if sidecar.chunk is not None and zoom[0] < sidecar.chunk.z:
+        raise TilesError(
+            f"chunk {sidecar.chunk.tile} tiles from its own zoom {sidecar.chunk.z}: "
+            f"zoom {zoom[0]} tiles would overlap its neighbours"
+        )
+    gdal_ops.require_gdal()
+    verify_alignment(tif, grid)  # the gate again, right before tiles are written
+    record = build_tiles(
+        tif,
+        out or job_dir / FANTASY_PMTILES,
+        grid,
+        zoom_range=zoom,
+        native_zoom=sidecar.native_zoom,
+        name=sidecar.job_id,
+        work_dir=job_dir,
+        extra_metadata=bake_metadata(sidecar),
+        sliver_px=CHUNK_SLIVER_PX if sidecar.chunk is not None else 0.0,
+    )
+    sidecar.tiles = record
+    sidecar.timings = {**sidecar.timings, "tiles": round(time.perf_counter() - started, 3)}
+    save_sidecar(job_dir, sidecar)
+    return record
 
 
 def bake_metadata(sidecar) -> dict:  # noqa: ANN001 - JobSidecar

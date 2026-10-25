@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import math
 import re
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -38,6 +39,7 @@ from argus_atlas.models import (
     SIDE_MULTIPLE,
     AtlasError,
     BBox,
+    ChunkRecord,
     FileRef,
     GdalCommand,
     Grid,
@@ -149,32 +151,10 @@ def validate_layer_name(name: str) -> str:
     return name
 
 
-def build_controls(
-    dem: Path,
-    bbox: BBox,
-    out_dir: Path,
-    *,
-    land: Path | None = None,
-    layers: dict[str, Path] | None = None,
-    sea_level: float | None = None,
-    composite: bool = True,
-    resampling: str | None = None,
-    long_side: int | None = None,
-    resolution: float | None = None,
-    job_id: str | None = None,
-) -> JobSidecar:
-    """Warp the DEM, write hillshade/slope(/layer masks/composite) controls and ``job.json`` under *out_dir*.
-
-    *layers* maps a control name to any OGR-readable vector file (GeoJSON, GPKG,
-    shapefile …) in any CRS; *land* is shorthand for ``layers["land"]``. Each
-    is reprojected and clipped to the canvas, then burnt to a 0/255 mask.
-    *sea_level* (metres) adds a ``sea`` mask of every DEM cell at or below it —
-    OSM has no ocean polygons, and Copernicus GLO-30 puts the sea at exactly 0.
-    With *composite*, the layers in :data:`COMPOSITE_PALETTE` are painted over
-    the hillshade into ``composite.png`` as well. *resampling* (``None`` = auto)
-    is the gdalwarp method: a spline when the canvas is much finer than the DEM,
-    so a 1 km AOI on a 30 m DEM does not inherit a cell staircase.
-    """
+def check_inputs(
+    dem: Path, land: Path | None = None, layers: dict[str, Path] | None = None
+) -> tuple[Path, dict[str, Path]]:
+    """The DEM and the vector layers by name (``land`` is the layer named land), each checked to exist."""
     dem = dem.expanduser()
     if not dem.is_file():
         raise AtlasError(f"DEM not found: {dem}")
@@ -189,6 +169,45 @@ def build_controls(
         path = sources[name] = path.expanduser()
         if not path.is_file():
             raise AtlasError(f"{name} layer file not found: {path}")
+    return dem, sources
+
+
+def build_controls(
+    dem: Path,
+    bbox: BBox,
+    out_dir: Path,
+    *,
+    land: Path | None = None,
+    layers: dict[str, Path] | None = None,
+    sea_level: float | None = None,
+    composite: bool = True,
+    resampling: str | None = None,
+    long_side: int | None = None,
+    resolution: float | None = None,
+    grid: Grid | None = None,
+    chunk: ChunkRecord | None = None,
+    job_id: str | None = None,
+) -> JobSidecar:
+    """Warp the DEM, write hillshade/slope(/layer masks/composite) controls and ``job.json`` under *out_dir*.
+
+    *layers* maps a control name to any OGR-readable vector file (GeoJSON, GPKG,
+    shapefile …) in any CRS; *land* is shorthand for ``layers["land"]``. Each
+    is reprojected and clipped to the canvas, then burnt to a 0/255 mask.
+    *sea_level* (metres) adds a ``sea`` mask of every DEM cell at or below it —
+    OSM has no ocean polygons, and Copernicus GLO-30 puts the sea at exactly 0.
+    With *composite*, the layers in :data:`COMPOSITE_PALETTE` are painted over
+    the hillshade into ``composite.png`` as well. *resampling* (``None`` = auto)
+    is the gdalwarp method: a spline when the canvas is much finer than the DEM,
+    so a 1 km AOI on a 30 m DEM does not inherit a cell staircase.
+
+    *grid* skips :func:`plan_grid` for a canvas planned elsewhere — a chunk's
+    tile plus margin (:func:`argus_atlas.chunks.chunk_grids`), recorded as *chunk*.
+    A chunk's archive starts at its own zoom: coarser tiles would spill past the tile.
+    """
+    started = time.perf_counter()
+    if grid is not None and (long_side is not None or resolution is not None):
+        raise AtlasError("a preplanned grid takes no --long-side or --resolution")
+    dem, sources = check_inputs(dem, land, layers)
     job_id = require_safe_id(job_id or out_dir.name, "job id")
     gdal_ops.require_gdal()
     paintable = sea_level is not None or any(n in COMPOSITE_PALETTE for n in sources)
@@ -197,7 +216,8 @@ def build_controls(
     if needs_calc and calc is None:
         raise AtlasError("the sea mask and the composite control need gdal_calc.py (python3-gdal / gdal-python-tools)")
 
-    grid = plan_grid(bbox, long_side=long_side, resolution=resolution)
+    if grid is None:
+        grid = plan_grid(bbox, long_side=long_side, resolution=resolution)
     out_dir.mkdir(parents=True, exist_ok=True)
     commands: list[GdalCommand] = []
     logger.info("controls.plan", job_id=job_id, width=grid.width, height=grid.height, resolution=grid.resolution)
@@ -265,9 +285,11 @@ def build_controls(
         grid=grid,
         resolution=grid.resolution,
         native_zoom=native,
-        zoom_range=zoom_range(native),
+        zoom_range=(chunk.z, native) if chunk is not None else zoom_range(native),
         controls=controls,
         commands=commands,
+        chunk=chunk,
+        timings={"controls": round(time.perf_counter() - started, 3)},
     )
     save_sidecar(out_dir, sidecar)
     logger.info("controls.done", job_id=job_id, controls=sorted(controls))

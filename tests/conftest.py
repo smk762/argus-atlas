@@ -40,6 +40,7 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "ATLAS_JOBS_DIR",
         "ATLAS_DEM_DIR",
         "ATLAS_MODELS_DIR",
+        "ATLAS_RECIPES_DIR",
         "ATLAS_WORKFLOW",
         "ATLAS_BACKEND",
         "ATLAS_CORS_ORIGINS",

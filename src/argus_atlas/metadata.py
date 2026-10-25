@@ -55,6 +55,8 @@ def bake_payload(
         "backend": backend,
         "engine_version": engine_version,
         "workflow_sha256": workflow_sha256,
+        "chunk": sidecar.chunk.tile if sidecar.chunk else None,
+        "recipe_sha256": sidecar.recipe.sha256 if sidecar.recipe else None,
     }
 
 

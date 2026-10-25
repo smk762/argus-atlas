@@ -41,9 +41,20 @@ def bbox_to_mercator(bbox: BBox) -> tuple[float, float, float, float]:
 
 
 def mercator_to_bbox(xmin: float, ymin: float, xmax: float, ymax: float) -> BBox:
+    """The lon/lat box of a metre extent, clamped to the Web Mercator world.
+
+    Extents on the antimeridian or the latitude cap (edge XYZ tiles, a canvas
+    padded past them) unproject with float noise such as -180.00000000000003,
+    which :class:`BBox` would refuse.
+    """
     west, south = mercator_to_lonlat(xmin, ymin)
     east, north = mercator_to_lonlat(xmax, ymax)
-    return BBox(west=west, south=south, east=east, north=north)
+    return BBox(
+        west=max(west, -180.0),
+        south=max(south, -MAX_LATITUDE),
+        east=min(east, 180.0),
+        north=min(north, MAX_LATITUDE),
+    )
 
 
 def resolution_at_zoom(zoom: int, tile_size: int = TILE_SIZE) -> float:

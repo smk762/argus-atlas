@@ -15,11 +15,11 @@ from __future__ import annotations
 import math
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Sidecar schema version. Bump the minor for additive fields, the major for a
-# breaking change to what a reader must understand.
-ATLAS_VERSION = "0.1"
+# breaking change to what a reader must understand. 0.2 added chunk, recipe and timings.
+ATLAS_VERSION = "0.2"
 
 CRS = "EPSG:3857"
 EPSG_CODE = 3857
@@ -64,8 +64,16 @@ BASE_CONTROL_KINDS: tuple[str, ...] = ("hillshade", "slope")
 COMPOSITE_KIND = "composite"
 # A water mask derived from the DEM (everything at or below --sea-level), for coasts: OSM has no ocean polygons.
 SEA_KIND = "sea"
+# Seam controls of a chunk job: the init image with already-baked neighbours pasted into the margin,
+# and the inpaint mask (255 = paint, 0 = keep the neighbour's pixels).
+SEAM_INIT_KIND = "seam_init"
+SEAM_MASK_KIND = "seam_mask"
 # Names a layer may not take: they are produced by atlas itself.
-RESERVED_CONTROL_KINDS: frozenset[str] = frozenset({*BASE_CONTROL_KINDS, COMPOSITE_KIND, SEA_KIND, "fantasy"})
+RESERVED_CONTROL_KINDS: frozenset[str] = frozenset(
+    {*BASE_CONTROL_KINDS, COMPOSITE_KIND, SEA_KIND, SEAM_INIT_KIND, SEAM_MASK_KIND, "fantasy"}
+)
+# Recipe names travel into job ids and seeds, so they share the job-id charset.
+RECIPE_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
 LAYER_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
 
 
@@ -215,6 +223,8 @@ class BakeParams(BaseModel):
     scheduler: str = DEFAULT_SCHEDULER
     # The style preset the prompt/negative/denoise came from, if any (see argus_atlas.presets).
     preset: str | None = None
+    # The style recipe these params were resolved from, if any (see argus_atlas.recipes).
+    recipe: str | None = None
 
 
 class BakeRecord(BaseModel):
@@ -255,6 +265,99 @@ class TilesRecord(BaseModel):
         return self
 
 
+class SeedScheme(BaseModel):
+    """How a recipe picks the seed: ``tile`` hashes (recipe, base, z/x/y), ``fixed`` uses *base* for every chunk."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scheme: Literal["tile", "fixed"] = "tile"
+    base: int = Field(default=0, ge=0)
+
+
+class Recipe(BaseModel):
+    """A style recipe: everything that makes one style look the same chunk after chunk.
+
+    Unset prompt/negative/denoise/cfg/steps come from *preset*, else the package
+    defaults (:func:`argus_atlas.presets.resolve_params`). *workflow* is a packaged
+    template name or a path relative to the recipe file; unset, it is the packaged
+    seam template with or without a LoRA slot, to match *lora*.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(pattern=RECIPE_NAME_PATTERN)
+    preset: str | None = None
+    checkpoint: str
+    lora: str | None = None
+    lora_weight: float = DEFAULT_LORA_WEIGHT
+    workflow: str | None = None
+    prompt: str | None = None
+    negative: str | None = None
+    denoise: float | None = Field(default=None, gt=0, le=1)
+    cfg: float | None = Field(default=None, gt=0)
+    steps: int | None = Field(default=None, gt=0)
+    sampler: str = DEFAULT_SAMPLER
+    scheduler: str = DEFAULT_SCHEDULER
+    seed: SeedScheme = Field(default_factory=SeedScheme)
+
+
+class RecipeRecord(BaseModel):
+    """The recipe a chunk was baked with, and the digest of its canonical JSON."""
+
+    recipe: Recipe
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ChunkNeighbour(BaseModel):
+    """An already-baked neighbour whose pixels were pasted into this chunk's margin."""
+
+    tile: str
+    job_id: str
+    image: FileRef  # its fantasy_chunk.tif, absolute path + digest
+
+
+class SeamBlend(BaseModel):
+    """How a chunk's painted canvas was matched to its neighbours before the crop.
+
+    ``offset`` is the per-band (RGB) tone shift applied to the whole canvas so its
+    strip along the neighbours matches theirs; ``feather`` is how far into the tile
+    the remaining difference at the seam was faded out. ``image`` is the matched
+    canvas the crop was cut from (``fantasy.tif`` itself stays as painted).
+    """
+
+    offset: list[float]
+    feather: int = Field(ge=0)
+    image: FileRef
+
+
+class ChunkRecord(BaseModel):
+    """A job baked as one XYZ tile: the canvas is the tile plus *margin* px on every side.
+
+    ``inner`` is the tile's own grid. The sidecar grid (the canvas) is what the model
+    paints and the alignment gate checks; the crop to ``inner`` is gated again and is
+    what gets tiled, so neighbouring chunks never overlap.
+    """
+
+    z: int = Field(ge=0)
+    x: int = Field(ge=0)
+    y: int = Field(ge=0)
+    size: int = Field(gt=0)
+    margin: int = Field(ge=0)
+    inner: Grid
+    neighbours: list[ChunkNeighbour] = Field(default_factory=list)
+    image: FileRef | None = None
+    # Seam settings: px the seam mask fades over on the neighbours' side (0 = hard edge), px the
+    # pixel correction fades over into the tile (0 = none), and whether the tone is matched.
+    mask_feather: int = Field(default=32, ge=0)
+    feather: int = Field(default=64, ge=0)
+    tone: bool = True
+    blend: SeamBlend | None = None
+
+    @property
+    def tile(self) -> str:
+        return f"{self.z}/{self.x}/{self.y}"
+
+
 JobStatus = Literal["controls", "baked", "unaligned", "tiled"]
 
 
@@ -277,6 +380,10 @@ class JobSidecar(BaseModel):
     commands: list[GdalCommand] = Field(default_factory=list)
     bake: BakeRecord | None = None
     tiles: TilesRecord | None = None
+    chunk: ChunkRecord | None = None
+    recipe: RecipeRecord | None = None
+    # Wall-clock seconds per stage (controls, seams, verify, generate, georeference, crop, tiles).
+    timings: dict[str, float] = Field(default_factory=dict)
 
     @property
     def status(self) -> JobStatus:
@@ -311,14 +418,17 @@ class JobDigest(BaseModel):
     layers: list[str] = Field(default_factory=list)
     has_composite: bool = False
     has_archive: bool
+    chunk: str | None = None  # "z/x/y" for a chunk job
+    recipe: str | None = None
 
 
-ProgressType = Literal["controls", "generate", "georeference", "done", "error"]
+ProgressType = Literal["controls", "generate", "georeference", "tiles", "done", "error"]
 
 
 class ProgressEvent(BaseModel):
     """One NDJSON line of ``POST /bake/stream``, in order: ``controls``,
-    ``generate``, ``georeference``, then ``done`` or ``error``."""
+    ``generate``, ``georeference``, then ``done`` or ``error``. The ``chunk``
+    command adds ``tiles`` frames after the bake's ``done``."""
 
     job_id: str
     type: ProgressType

@@ -65,6 +65,20 @@ Any OGR-readable file works as a layer, in any CRS; a name outside the palette i
 
 `argus-atlas presets` lists six named styles (antique, imhof, tolkien, watercolor, cyberpunk, minecraft, plus pixel) and `bake --preset <name>` uses one; the API has `GET /presets` and takes `preset` on the bake request, so a demo can offer a fixed menu instead of free-text prompts. Every output carries the full request: the PNG in an EXIF `ImageDescription` and a text chunk, the GeoTIFF in `TIFFTAG_IMAGEDESCRIPTION`, the PMTiles archive in its metadata. `exiftool fantasy.png`, `gdalinfo fantasy.tif` or `argus_atlas.metadata.read_png_payload()` give it back, which is what makes a hundred bakes rankable later.
 
+## Chunks and style recipes
+
+To grow a map piece by piece, bake it one XYZ tile at a time. `argus-atlas chunk --tile z/x/y --recipe <style> --dem <dem>` runs controls, seams, bake, crop and tiles in one go:
+
+- **The grid comes from the tile id.** A chunk is painted at 256, 512 or 1024 px, so its native zoom is z, z+1 or z+2 and every tile in its pyramid is a whole XYZ tile. All chunks of one size share one pixel lattice.
+- **Seams continue the neighbours.** The canvas is the tile plus a margin (default 128 px, a multiple of 32). Chunks already baked from the same recipe next to it (under `--neighbours`, by default the parent of the job dir) are pasted into the margin of a `seam_init` control. A `seam_mask` control marks those pixels as kept. The packaged `comfyui_sdxl_chunk_seam*.json` templates denoise only the unmasked area, so the model paints up to the tile edge while it sees the neighbour across it. A chunk job re-baked with `bake` or `POST /bake/stream` no longer counts as the recipe's, and a chunk of the recipe that would overlap one already baked (the same tile in another job dir, or another zoom over the same ground) is refused.
+- **Match, then crop.** The mask fades over 32 px on the neighbours' side (`--mask-feather`), so there is no hard latent edge. After the bake, the chunk's colours are shifted to match the neighbours along the seam (`--tone`), and what difference is left at the seam is faded out over 64 px into the tile (`--feather`). The painted `fantasy.tif` is kept as it came from the model; the crop comes from `fantasy_blend.tif`.
+- **Crop, then gate again.** After the alignment gate the margin is cut off (`fantasy_chunk.tif`) and the crop is gated against the tile's own grid. Only the crop is tiled, from zoom z to native, so the archives of neighbouring chunks never overlap.
+- **A recipe is a style you can repeat.** It is a JSON file (see [`examples/recipes/antique.json`](https://github.com/smk762/argus-atlas/blob/main/examples/recipes/antique.json)) naming a preset, checkpoint, optional LoRA, workflow and a seed scheme. With `tile` seeds, each chunk's seed is a hash of the recipe name, a base and z/x/y, so baking a chunk again gives the same image. `--recipe <name>` looks up `$ATLAS_RECIPES_DIR/<name>.json`. The whole recipe and its digest go into `job.json`.
+- **The workflow comes from the recipe.** `chunk` bakes with the recipe's `workflow` (unset: the packaged seam template matching its LoRA), never with `--workflow` or `ATLAS_WORKFLOW`, which name non-seam templates. Like the other packaged templates, the seam templates name the placeholder ControlNet `diffusers_xl_depth_full.safetensors`: on a host without it, copy one, edit its `ControlNetLoader` and set the recipe's `workflow` to the copy (a path relative to the recipe file).
+- **Every stage is timed.** `job.json` records wall-clock seconds for controls, seams, verify, generate, georeference, crop and tiles, so a bake queue can be sized from real runs.
+
+`--controls-only` stops after the seam controls and needs no GPU.
+
 ## Live demo
 
 A hosted demo will be linked here. Until then, [`examples/flow.html`](https://github.com/smk762/argus-atlas/blob/main/examples/flow.html) runs the whole flow against a local server (AOI, OSM layers, controls, bake, tiles, drape) and [`examples/viewer.html`](https://github.com/smk762/argus-atlas/blob/main/examples/viewer.html) drapes any baked job on a MapLibre basemap with an opacity slider: start `argus-atlas serve --cors` (with `ATLAS_CORS_ORIGINS='*'`) and open the page, or feed it a `fantasy.pmtiles` directly. The first real AOI (Lake Garda, Copernicus GLO-30, Juggernaut XL, no LoRA) passed the alignment gate on 17 Oct 2026; the commands are in [`docs/first-bake.md`](https://github.com/smk762/argus-atlas/blob/main/docs/first-bake.md).
@@ -290,6 +304,6 @@ The launch and onboarding plan lives in [TODO.md](TODO.md). Agents working in th
 
 - Downloading a DEM. The caller passes a local path; atlas records it and its SHA256.
 - Training, captioning, or curating.
-- Blending seams across multiple canvases, or a worldwide pyramid.
+- A worldwide pyramid, or merging chunk archives into one (chunks are laid side by side by the caller).
 - Serving tiles beyond `GET` of the finished PMTiles file.
 - GeoServer, PostGIS, tippecanoe, Leaflet, or any game logic.

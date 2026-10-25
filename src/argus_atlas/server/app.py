@@ -429,40 +429,23 @@ def create_app(
     @app.post("/tiles")
     def tiles(request: TilesRequest) -> TilesRecord:
         """Cut the PMTiles archive for a baked job. Re-runs the alignment gate first."""
-        from argus_atlas.georef import FANTASY_TIF, AlignmentError, verify_alignment
-        from argus_atlas.tiles import FANTASY_PMTILES, bake_metadata, build_tiles
+        from argus_atlas.georef import AlignmentError
+        from argus_atlas.tiles import NotTileableError, tile_job
 
         sidecar = _load(request.job_id)
         job_dir = store.dir(sidecar.job_id)
         if sidecar.bake is None or not sidecar.bake.aligned or sidecar.bake.geotiff is None:
             raise HTTPException(status_code=409, detail=f"job {sidecar.job_id!r} has no aligned GeoTIFF to tile")
-        tif = job_dir / FANTASY_TIF
         try:
-            gdal_ops.require_gdal()
-            verify_alignment(tif, sidecar.grid)
-            zmin, zmax = sidecar.zoom_range
-            zoom = (
-                request.min_zoom if request.min_zoom is not None else zmin,
-                request.max_zoom if request.max_zoom is not None else zmax,
-            )
-            record = build_tiles(
-                tif,
-                job_dir / FANTASY_PMTILES,
-                sidecar.grid,
-                zoom_range=zoom,
-                native_zoom=sidecar.native_zoom,
-                name=sidecar.job_id,
-                work_dir=job_dir,
-                extra_metadata=bake_metadata(sidecar),
-            )
+            record = tile_job(job_dir, sidecar, min_zoom=request.min_zoom, max_zoom=request.max_zoom)
         except AlignmentError as exc:
             raise HTTPException(status_code=409, detail=f"alignment gate failed: {exc}") from exc
+        except NotTileableError as exc:  # e.g. a chunk whose crop failed: not tileable yet, like an unbaked job
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except gdal_ops.GdalError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except AtlasError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        sidecar.tiles = record
-        store.save(sidecar)
         return record
 
     @app.get("/jobs")

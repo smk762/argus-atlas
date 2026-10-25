@@ -11,21 +11,26 @@
 # `pmtiles` CLI is not installed (it cannot pack an XYZ directory).
 FROM ghcr.io/osgeo/gdal:ubuntu-small-3.11.4
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# Pin past the eMudhra/emSign incident. A floating :latest tag can stay cached
+# on a pre-0.13.4 digest, which still trusts emSign ECC Root CA - G3.
+# https://discuss.python.org/t/information-for-python-users-regarding-emudhra-emsign-ca-certificate-security-incident/109576
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /bin/
 
 WORKDIR /app
 
 # hatch-vcs derives the version from git history, so the build context must
 # include .git (keep it out of .dockerignore) and the image needs git.
-# eMudhra/emSign CA incident (Oct 2026, discuss.python.org/t/109576): Mozilla,
-# certifi 2026.10.19+, pip 26.2.2+ and uv 0.13.4+ dropped the emSign roots, but the
-# Ubuntu ca-certificates package has not caught up, and urllib (OSM fetch, ComfyUI
-# transport) trusts the *system* bundle. Upgrade the package and distrust the
-# emSign roots explicitly so no chain through them verifies in this image.
+# urllib (OSM fetch, ComfyUI transport) trusts the system bundle. Ubuntu's
+# ca-certificates package lags, so distrust emSign ECC Root CA - G3 and the
+# Comodo AAA cross-sign root here. Unaffected emSign roots stay enabled,
+# matching certifi 2026.10.19 (discuss.python.org/t/109576).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && apt-get install -y --only-upgrade ca-certificates \
-    && sed -i 's|^mozilla/emSign|!mozilla/emSign|' /etc/ca-certificates.conf \
+    && sed -i \
+        -e 's|^mozilla/emSign_ECC_Root_CA_-_G3|!mozilla/emSign_ECC_Root_CA_-_G3|' \
+        -e 's|^mozilla/Comodo_AAA|!mozilla/Comodo_AAA|' \
+        /etc/ca-certificates.conf \
     && update-ca-certificates --fresh >/dev/null \
     && rm -rf /var/lib/apt/lists/*
 
@@ -35,8 +40,12 @@ COPY . .
 # managed), so the package goes into its own venv; gdal2tiles.py keeps using
 # /usr/bin/python3 + the system osgeo bindings.
 ARG EXTRAS="server,cli,tiles"
+# A uv venv has no pip of its own, so uv installs the pinned pip 26.2.2 wheel
+# (hash-checked) alongside certifi 2026.10.19+ — both dropped the emSign roots.
 RUN uv venv /opt/venv --python /usr/bin/python3 \
-    && uv pip install --python /opt/venv/bin/python --no-cache ".[${EXTRAS}]"
+    && uv pip install --python /opt/venv/bin/python --no-cache \
+        "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70" \
+        "certifi>=2026.10.19" ".[${EXTRAS}]"
 
 ENV PATH="/opt/venv/bin:${PATH}" \
     ATLAS_JOBS_DIR=/data/out/atlas \

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from argus_atlas.backends import backend_from_env
 from argus_atlas.backends.workflow import (
     EXAMPLE_TEMPLATE_SEAM,
     EXAMPLE_TEMPLATE_SEAM_NOLORA,
@@ -69,8 +70,9 @@ def test_params_take_recipe_then_preset_then_defaults() -> None:
 
 
 def test_workflow_defaults_follow_the_lora(tmp_path: Path) -> None:
-    assert recipe_workflow(Recipe(name="a", checkpoint="c")) == Path(EXAMPLE_TEMPLATE_SEAM_NOLORA)
-    assert recipe_workflow(Recipe(name="a", checkpoint="c", lora="map.safetensors")) == Path(EXAMPLE_TEMPLATE_SEAM)
+    nolora = recipe_workflow(Recipe(name="a", checkpoint="c"))
+    assert nolora.is_absolute() and nolora.is_file() and nolora.name == EXAMPLE_TEMPLATE_SEAM_NOLORA
+    assert recipe_workflow(Recipe(name="a", checkpoint="c", lora="map.safetensors")).name == EXAMPLE_TEMPLATE_SEAM
     graph = tmp_path / "graphs" / "mine.json"
     graph.parent.mkdir()
     graph.write_text("{}", "utf-8")
@@ -96,3 +98,14 @@ def test_seam_templates_mask_the_latent(name: str) -> None:
     sampler = next(n for n in graph.values() if n["class_type"] == "KSampler")
     mask_node = graph[sampler["inputs"]["latent_image"][0]]
     assert mask_node["class_type"] == "SetLatentNoiseMask"
+    knobs = (sampler["inputs"]["sampler_name"], sampler["inputs"]["scheduler"])
+    assert knobs == ("$sampler", "$scheduler"), "the recipe's sampler and scheduler reach the graph"
+
+
+def test_a_file_in_the_cwd_cannot_replace_the_packaged_template(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / EXAMPLE_TEMPLATE_SEAM_NOLORA).write_text('{"1": {"class_type": "Stub", "inputs": {}}}', "utf-8")
+    monkeypatch.chdir(tmp_path)
+    backend = backend_from_env(workflow=recipe_workflow(Recipe(name="a", checkpoint="c")))
+    assert backend.template == example_template(EXAMPLE_TEMPLATE_SEAM_NOLORA)  # type: ignore[attr-defined]

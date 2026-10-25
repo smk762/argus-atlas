@@ -14,6 +14,7 @@ its name into the bake params, so every output says which style made it.
 from __future__ import annotations
 
 import hashlib
+import importlib.resources
 import json
 from pathlib import Path
 
@@ -60,10 +61,14 @@ def load_recipe(ref: str | Path, *, recipes_root: Path | None = None) -> tuple[R
 
 
 def recipe_workflow(recipe: Recipe, recipe_path: Path | None = None) -> Path:
-    """The workflow template to bake with: a packaged name (as a bare path) or a file next to the recipe."""
+    """The workflow template to bake with: a packaged template's installed file, or a file next to the recipe.
+
+    A packaged template comes back as an absolute path, so a file of the same name in the
+    working directory can never stand in for it.
+    """
     name = recipe.workflow or (EXAMPLE_TEMPLATE_SEAM if recipe.lora else EXAMPLE_TEMPLATE_SEAM_NOLORA)
     if name in PACKAGED_TEMPLATES:
-        return Path(name)
+        return Path(str(importlib.resources.files("argus_atlas").joinpath("templates", name)))
     path = Path(name).expanduser()
     if not path.is_absolute() and recipe_path is not None:
         path = recipe_path.parent / path

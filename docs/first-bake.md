@@ -52,6 +52,14 @@ sed -i 's|diffusers_xl_depth_full.safetensors|controlnet-union-sdxl/diffusion_py
 
 Then `--workflow /srv/argus/atlas-nolora.json` (or `ATLAS_WORKFLOW=`). The `strength` (0.65) and `end_percent` (0.8) in that node are the ControlNet knobs; they live in the template on purpose.
 
+`chunk` reads neither `--workflow` nor `ATLAS_WORKFLOW` (here they name non-seam templates); it bakes with the recipe's `workflow`. Patch the seam template the same way and name the copy in the recipe, as a path relative to the recipe file:
+
+```bash
+python -c "import argus_atlas.backends.workflow as w, json; print(json.dumps(w.example_template(w.EXAMPLE_TEMPLATE_SEAM_NOLORA), indent=2))" > /srv/argus/recipes/atlas-seam-nolora.json
+sed -i 's|diffusers_xl_depth_full.safetensors|controlnet-union-sdxl/diffusion_pytorch_model_promax.safetensors|' /srv/argus/recipes/atlas-seam-nolora.json
+# then in /srv/argus/recipes/antique.json (mounted as ATLAS_RECIPES_DIR): "workflow": "atlas-seam-nolora.json"
+```
+
 ## Run it (CLI, no studio)
 
 ```bash

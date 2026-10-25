@@ -371,15 +371,14 @@ def rgb_copy_argv(src: Path, dst: Path, *, grey: bool = False) -> list[str]:
 
 
 def paste_argv(src: Path, dst: Path) -> list[str]:
-    """Warp the RGB bands of *src* into the **existing** raster *dst* (no ``-overwrite``).
+    """Warp *src* into the **existing** RGB raster *dst* (no ``-overwrite``).
 
     Chunks share one pixel lattice, so nearest-neighbour copies a neighbour's
-    pixels exactly; *dst* keeps its own pixels wherever *src* has none.
+    pixels exactly; *dst* keeps its own pixels wherever *src* has none. Bands map
+    1:1 (an alpha band of *src* is used as its mask), so no ``-srcband``/``-dstband``,
+    which only exist since GDAL 3.7.
     """
-    bands: list[str] = []
-    for b in ("1", "2", "3"):
-        bands += ["-srcband", b, "-dstband", b]
-    return ["gdalwarp", "-r", "near", *bands, str(src), str(dst)]
+    return ["gdalwarp", "-r", "near", str(src), str(dst)]
 
 
 def crop_argv(src: Path, dst: Path, xoff: int, yoff: int, width: int, height: int) -> list[str]:

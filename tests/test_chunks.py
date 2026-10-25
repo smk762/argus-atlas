@@ -6,6 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from argus_atlas import gdal_ops
+from argus_atlas.backends.base import BackendError
+from argus_atlas.bake import run_bake
 from argus_atlas.chunks import (
     CHUNK_TIF,
     chunk_bbox,
@@ -16,10 +19,13 @@ from argus_atlas.chunks import (
     parse_tile,
     run_chunk,
 )
-from argus_atlas.jobs import load_sidecar
-from argus_atlas.mercator import resolution_at_zoom, tile_bounds
-from argus_atlas.models import AtlasError, Recipe
-from argus_atlas.recipes import recipe_record
+from argus_atlas.georef import AlignmentError
+from argus_atlas.jobs import copy_job, load_sidecar
+from argus_atlas.mercator import mercator_to_bbox, resolution_at_zoom, tile_bounds
+from argus_atlas.metadata import read_png_payload
+from argus_atlas.models import AtlasError, BakeParams, ChunkRecord, Recipe
+from argus_atlas.recipes import recipe_params, recipe_record
+from argus_atlas.tiles import NotTileableError, TilesError, tile_job
 from tests.conftest import requires_gdal
 from tests.fakebackend import FakeBackend
 
@@ -27,13 +33,35 @@ from tests.fakebackend import FakeBackend
 A, B, C = "14/8650/5890", "14/8651/5890", "14/8651/5891"
 SIZE, MARGIN = 256, 32
 RECIPE = recipe_record(Recipe(name="antique", preset="antique", checkpoint="sd_xl_base_1.0.safetensors"))
+# A bake of a chunk job that does not come from its recipe (`bake`, POST /bake/stream).
+OTHER = BakeParams(checkpoint="sd_xl_base_1.0.safetensors", seed=7, preset="cyberpunk")
 
 
 def test_parse_tile() -> None:
     assert parse_tile("14/8650/5890") == (14, 8650, 5890)
-    for bad in ("14/8650", "a/b/c", "14/-1/2", "2/4/0", "1/0/2"):
+    for bad in ("14/8650", "a/b/c", "14/-1/2", "2/4/0", "1/0/2", "1/²/0", "15/0/0", "99999999999/0/0"):
         with pytest.raises(AtlasError):
             parse_tile(bad)
+
+
+def test_edge_chunks_have_a_valid_archive_bbox() -> None:
+    # The first and last XYZ columns sit on the antimeridian: float noise must not push the bounds past ±180.
+    for tile in ("0/0/0", "2/0/0", "14/0/8191", "14/16383/8953"):
+        _, inner = chunk_grids(*parse_tile(tile), size=SIZE, margin=MARGIN)
+        bbox = mercator_to_bbox(*inner.bounds)
+        assert -180.0 <= bbox.west < bbox.east <= 180.0
+
+
+def test_unreadable_job_dirs_are_skipped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "someone-elses-job").mkdir()
+
+    def denied(job_dir: Path) -> None:
+        raise PermissionError(13, "Permission denied", str(job_dir / "job.json"))
+
+    monkeypatch.setattr("argus_atlas.chunks.load_sidecar", denied)
+    _, inner = chunk_grids(*parse_tile(A), size=SIZE, margin=MARGIN)
+    probe = ChunkRecord(z=14, x=8650, y=5890, size=SIZE, margin=MARGIN, inner=inner)
+    assert find_neighbours(tmp_path, "antique", probe) == []
 
 
 def test_chunk_grids_sit_on_the_tile_lattice() -> None:
@@ -198,3 +226,96 @@ def test_a_512_px_chunk_cuts_two_zooms_without_slivers(dem: Path, tmp_path: Path
     )
     assert sidecar.native_zoom == 14 and sidecar.zoom_range == (13, 14)
     assert sidecar.tiles is not None and sidecar.tiles.n_tiles == 1 + 4, "the tile itself plus its four children"
+
+
+@requires_gdal
+def test_tiles_never_start_coarser_than_the_chunk(dem: Path, tmp_path: Path, models_dir: Path) -> None:
+    sidecar = _chunk(dem, tmp_path, A, models_dir)
+    with pytest.raises(TilesError, match="own zoom 14"):
+        tile_job(tmp_path / sidecar.job_id, sidecar, min_zoom=13)
+
+
+@requires_gdal
+def test_a_bake_outside_the_recipe_is_not_its_chunk(dem: Path, tmp_path: Path, models_dir: Path) -> None:
+    a = _chunk(dem, tmp_path, A, models_dir)
+    a_dir = tmp_path / a.job_id
+    # A variant baked next to A (`bake --out`) neither blocks A's neighbours nor stands in for A.
+    variant = tmp_path / f"{a.job_id}-v2"
+    copy_job(a_dir, variant)
+    run_bake(variant, OTHER, FakeBackend(), models_root=models_dir)
+    copied = load_sidecar(variant)
+    assert copied.recipe is None and copied.chunk is not None and copied.chunk.image is not None
+    b = _chunk(dem, tmp_path, B, models_dir)
+    assert b.chunk is not None and [n.tile for n in b.chunk.neighbours] == [A]
+    # Re-baking A itself with other params takes it out of the recipe's map, and its payload says so.
+    run_bake(a_dir, OTHER, FakeBackend(), models_root=models_dir)
+    assert load_sidecar(a_dir).recipe is None
+    payload = read_png_payload(a_dir / "fantasy.png")
+    assert payload is not None and payload["recipe_sha256"] is None
+    c_dir = tmp_path / chunk_job_id("antique", *parse_tile(C))
+    c = run_chunk(dem, C, RECIPE, c_dir, size=SIZE, margin=MARGIN, controls_only=True)
+    assert c.chunk is not None and [n.tile for n in c.chunk.neighbours] == [B]
+
+
+@requires_gdal
+def test_a_failed_rebake_keeps_the_published_chunk(dem: Path, tmp_path: Path, models_dir: Path) -> None:
+    a = _chunk(dem, tmp_path, A, models_dir)
+    with pytest.raises(BackendError, match="engine down"):
+        run_chunk(
+            dem,
+            A,
+            RECIPE,
+            tmp_path / a.job_id,
+            backend=FakeBackend(fail="engine down"),
+            models_root=models_dir,
+            size=SIZE,
+            margin=MARGIN,
+        )
+    kept = load_sidecar(tmp_path / a.job_id)
+    assert kept.status == "tiled" and kept.chunk is not None and a.chunk is not None
+    assert kept.chunk.image == a.chunk.image
+
+
+@requires_gdal
+def test_chunks_of_one_recipe_never_overlap(dem: Path, tmp_path: Path, models_dir: Path) -> None:
+    # 13/4325/2945 at 512 px also cuts zoom 14, A among its tiles.
+    run_chunk(
+        dem,
+        "13/4325/2945",
+        RECIPE,
+        tmp_path / "antique-13-4325-2945",
+        backend=FakeBackend(),
+        models_root=models_dir,
+        size=512,
+        margin=64,
+    )
+    a_dir = tmp_path / chunk_job_id("antique", *parse_tile(A))
+    with pytest.raises(AtlasError, match="overlaps 14/8650/5890"):
+        run_chunk(dem, A, RECIPE, a_dir, size=SIZE, margin=MARGIN, controls_only=True)
+    assert not a_dir.exists(), "refused before anything was written"
+
+
+@requires_gdal
+def test_a_symlink_to_a_chunk_is_not_a_second_holder(dem: Path, tmp_path: Path, models_dir: Path) -> None:
+    a = _chunk(dem, tmp_path, A, models_dir)
+    (tmp_path / "latest").symlink_to(tmp_path / a.job_id, target_is_directory=True)
+    b_dir = tmp_path / chunk_job_id("antique", *parse_tile(B))
+    b = run_chunk(dem, B, RECIPE, b_dir, size=SIZE, margin=MARGIN, controls_only=True)
+    assert b.chunk is not None and [n.tile for n in b.chunk.neighbours] == [A]
+
+
+@requires_gdal
+def test_a_failed_crop_is_recorded(
+    dem: Path, tmp_path: Path, models_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job_dir = tmp_path / chunk_job_id("antique", *parse_tile(A))
+    run_chunk(dem, A, RECIPE, job_dir, size=SIZE, margin=MARGIN, controls_only=True)
+    crop = gdal_ops.crop_argv
+    monkeypatch.setattr(gdal_ops, "crop_argv", lambda src, dst, xoff, yoff, w, h: crop(src, dst, xoff, yoff, w - 1, h))
+    with pytest.raises(AlignmentError):
+        run_bake(job_dir, recipe_params(RECIPE.recipe, seed=1), FakeBackend(), models_root=models_dir)
+    sidecar = load_sidecar(job_dir)
+    assert sidecar.bake is not None and (sidecar.bake.error or "").startswith("crop failed")
+    assert "crop" in sidecar.timings
+    with pytest.raises(NotTileableError, match="never cropped"):
+        tile_job(job_dir, sidecar)

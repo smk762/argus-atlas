@@ -38,6 +38,10 @@ class TilesError(AtlasError):
     """Tiling or packing failed."""
 
 
+class NotTileableError(TilesError):
+    """The job has nothing gated to tile yet: no aligned bake, or a chunk whose crop failed."""
+
+
 def packer_status() -> dict[str, str | None]:
     """Which PMTiles tooling is present: the Python library and/or the Go CLI."""
     try:
@@ -184,11 +188,13 @@ def tile_source(job_dir: Path, sidecar: JobSidecar) -> tuple[Path, Grid]:
     from argus_atlas.georef import FANTASY_TIF
 
     if sidecar.bake is None or not sidecar.bake.aligned or sidecar.bake.geotiff is None:
-        raise TilesError(f"{sidecar.job_id} has no aligned GeoTIFF — bake it first (or its alignment gate failed)")
+        raise NotTileableError(
+            f"{sidecar.job_id} has no aligned GeoTIFF — bake it first (or its alignment gate failed)"
+        )
     if sidecar.chunk is None:
         return job_dir / FANTASY_TIF, sidecar.grid
     if sidecar.chunk.image is None:
-        raise TilesError(f"chunk {sidecar.chunk.tile} of {sidecar.job_id} was never cropped — bake it again")
+        raise NotTileableError(f"chunk {sidecar.chunk.tile} of {sidecar.job_id} was never cropped — bake it again")
     return job_dir / sidecar.chunk.image.path, sidecar.chunk.inner
 
 
@@ -207,13 +213,19 @@ def tile_job(
     started = time.perf_counter()
     tif, grid = tile_source(job_dir, sidecar)
     zmin, zmax = sidecar.zoom_range
+    zoom = (min_zoom if min_zoom is not None else zmin, max_zoom if max_zoom is not None else zmax)
+    if sidecar.chunk is not None and zoom[0] < sidecar.chunk.z:
+        raise TilesError(
+            f"chunk {sidecar.chunk.tile} tiles from its own zoom {sidecar.chunk.z}: "
+            f"zoom {zoom[0]} tiles would overlap its neighbours"
+        )
     gdal_ops.require_gdal()
     verify_alignment(tif, grid)  # the gate again, right before tiles are written
     record = build_tiles(
         tif,
         out or job_dir / FANTASY_PMTILES,
         grid,
-        zoom_range=(min_zoom if min_zoom is not None else zmin, max_zoom if max_zoom is not None else zmax),
+        zoom_range=zoom,
         native_zoom=sidecar.native_zoom,
         name=sidecar.job_id,
         work_dir=job_dir,

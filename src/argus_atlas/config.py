@@ -23,10 +23,12 @@ ENV_WORKFLOW = "ATLAS_WORKFLOW"
 ENV_CORS_ORIGINS = "ATLAS_CORS_ORIGINS"
 ENV_ALLOW_OSM = "ATLAS_ALLOW_OSM"
 ENV_OVERPASS_URL = "ATLAS_OVERPASS_URL"
+ENV_RECIPES_DIR = "ATLAS_RECIPES_DIR"
 
 DEFAULT_JOBS_DIR = "/data/out/atlas"
 DEFAULT_DEM_DIR = "/data/dem"
 DEFAULT_MODELS_DIR = "/data/models"
+DEFAULT_RECIPES_DIR = "/data/recipes"
 DEFAULT_BACKEND = "comfyui"
 DEFAULT_COMFYUI_URL = "http://host.docker.internal:8188"
 DEFAULT_CORS_ORIGINS = "http://localhost:3000"
@@ -57,6 +59,11 @@ def dem_dir(override: str | os.PathLike[str] | None = None) -> Path:
 def models_dir(override: str | os.PathLike[str] | None = None) -> Path:
     """Checkpoints and LoRAs (ComfyUI layout: ``checkpoints/``, ``loras/``), read-only."""
     return _env_path(ENV_MODELS_DIR, DEFAULT_MODELS_DIR, override)
+
+
+def recipes_dir(override: str | os.PathLike[str] | None = None) -> Path:
+    """Where ``--recipe <name>`` finds ``<name>.json`` (a path to a recipe file works anywhere)."""
+    return _env_path(ENV_RECIPES_DIR, DEFAULT_RECIPES_DIR, override)
 
 
 def backend_name(override: str | None = None) -> str:

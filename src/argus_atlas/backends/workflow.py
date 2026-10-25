@@ -12,8 +12,8 @@ Placeholders, argus-proof style:
 * always needed — ``$checkpoint`` ``$positive`` ``$negative`` ``$seed``
   ``$steps`` ``$cfg`` ``$denoise`` ``$width`` ``$height`` ``$hillshade``;
 * LoRA — ``$lora`` and ``$lora_weight`` together, required iff a LoRA is given;
-* optional controls — ``$slope``, ``$composite``, ``$land`` or any ``$<layer>`` the
-  job has (uploaded only when the template uses them); a ``$name`` the job cannot
+* optional controls — ``$slope``, ``$composite``, ``$seam_init``, ``$seam_mask``,
+  ``$land`` or any ``$<layer>`` the job has (uploaded only when the template uses them); a ``$name`` the job cannot
   supply is an error.
 
 A needed placeholder the template lacks, or a LoRA slot without a LoRA, is a
@@ -36,7 +36,17 @@ EXAMPLE_TEMPLATE_NOLORA = "comfyui_sdxl_img2img_control_nolora.json"
 # No LoRA, and the img2img init image is the painted composite (water, forest,
 # roads …) while the ControlNet still reads the hillshade. Needs a job with layers.
 EXAMPLE_TEMPLATE_COMPOSITE = "comfyui_sdxl_img2img_composite_nolora.json"
-PACKAGED_TEMPLATES: tuple[str, ...] = (EXAMPLE_TEMPLATE, EXAMPLE_TEMPLATE_NOLORA, EXAMPLE_TEMPLATE_COMPOSITE)
+# Chunk jobs: the img2img init is $seam_init (neighbours pasted into the margin) and
+# SetLatentNoiseMask limits the denoise to $seam_mask, so kept neighbour pixels stay put.
+EXAMPLE_TEMPLATE_SEAM = "comfyui_sdxl_chunk_seam.json"
+EXAMPLE_TEMPLATE_SEAM_NOLORA = "comfyui_sdxl_chunk_seam_nolora.json"
+PACKAGED_TEMPLATES: tuple[str, ...] = (
+    EXAMPLE_TEMPLATE,
+    EXAMPLE_TEMPLATE_NOLORA,
+    EXAMPLE_TEMPLATE_COMPOSITE,
+    EXAMPLE_TEMPLATE_SEAM,
+    EXAMPLE_TEMPLATE_SEAM_NOLORA,
+)
 
 REQUIRED_PLACEHOLDERS: tuple[str, ...] = (
     "$checkpoint",

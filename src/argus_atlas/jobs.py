@@ -21,6 +21,8 @@ _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 PREVIEW_FILES: dict[str, str] = {"fantasy": "fantasy.png"}
 # Outputs of a bake/tiles run — everything else in a job dir is a control artifact copy_job carries over.
 BAKE_OUTPUT_PREFIX = "fantasy"
+# Timings of the stages copy_job carries over with the controls.
+CONTROL_STAGES: frozenset[str] = frozenset({"controls", "seams"})
 
 
 def is_safe_id(value: str) -> bool:
@@ -71,6 +73,8 @@ def digest(sidecar: JobSidecar) -> JobDigest:
         layers=sidecar.layers,
         has_composite=COMPOSITE_KIND in sidecar.controls,
         has_archive=sidecar.tiles is not None,
+        chunk=sidecar.chunk.tile if sidecar.chunk else None,
+        recipe=sidecar.recipe.recipe.name if sidecar.recipe else None,
     )
 
 
@@ -84,7 +88,15 @@ def copy_job(src: Path, dst: Path) -> JobSidecar:
     for source in src.iterdir():
         if source.is_file() and source.name != SIDECAR_NAME and not source.name.startswith(BAKE_OUTPUT_PREFIX):
             shutil.copy2(source, dst / source.name)
-    fresh = sidecar.model_copy(update={"job_id": job_id, "bake": None, "tiles": None})
+    fresh = sidecar.model_copy(
+        update={
+            "job_id": job_id,
+            "bake": None,
+            "tiles": None,
+            "chunk": sidecar.chunk.model_copy(update={"image": None}) if sidecar.chunk else None,
+            "timings": {k: v for k, v in sidecar.timings.items() if k in CONTROL_STAGES},
+        }
+    )
     save_sidecar(dst, fresh)
     return fresh
 

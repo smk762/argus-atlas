@@ -223,20 +223,23 @@ def reproject_argv(
     return argv
 
 
-def rasterize_argv(vector: Path, dst: Path, grid: Grid, *, all_touched: bool = False) -> list[str]:
+def rasterize_argv(
+    vector: Path, dst: Path, grid: Grid, *, all_touched: bool = False, burn: int = 255, init: int = 0
+) -> list[str]:
     """Burn an EPSG:3857 vector (see :func:`reproject_argv`) to a 0/255 Byte mask on the canvas grid.
 
     *all_touched* burns every pixel a geometry touches: use it for line layers
-    (roads, rivers) so a one-pixel road does not break up at 45°.
+    (roads, rivers) so a one-pixel road does not break up at 45°. *burn*/*init*
+    swap for an inverted mask (the seam mask burns neighbours as 0 on 255).
     """
     return [
         "gdal_rasterize",
         "-burn",
-        "255",
+        str(burn),
         "-ot",
         "Byte",
         "-init",
-        "0",
+        str(init),
         "-a_srs",
         CRS,
         *_te(grid),
@@ -347,6 +350,53 @@ def stamp_argv(png: Path, tif: Path, grid: Grid, *, description: str | None = No
         "COMPRESS=DEFLATE",
         str(png),
         str(tif),
+    ]
+
+
+def rgb_copy_argv(src: Path, dst: Path, *, grey: bool = False) -> list[str]:
+    """Copy a raster to a 3-band RGB GeoTIFF with no NoData flag; *grey* repeats band 1 three times."""
+    bands = ["-b", "1", "-b", "1", "-b", "1"] if grey else ["-b", "1", "-b", "2", "-b", "3"]
+    return [
+        "gdal_translate",
+        "-of",
+        "GTiff",
+        *bands,
+        "-a_nodata",
+        "none",
+        "-co",
+        "COMPRESS=DEFLATE",
+        str(src),
+        str(dst),
+    ]
+
+
+def paste_argv(src: Path, dst: Path) -> list[str]:
+    """Warp the RGB bands of *src* into the **existing** raster *dst* (no ``-overwrite``).
+
+    Chunks share one pixel lattice, so nearest-neighbour copies a neighbour's
+    pixels exactly; *dst* keeps its own pixels wherever *src* has none.
+    """
+    bands: list[str] = []
+    for b in ("1", "2", "3"):
+        bands += ["-srcband", b, "-dstband", b]
+    return ["gdalwarp", "-r", "near", *bands, str(src), str(dst)]
+
+
+def crop_argv(src: Path, dst: Path, xoff: int, yoff: int, width: int, height: int) -> list[str]:
+    """Cut a pixel window out of *src*, keeping its georeferencing and metadata."""
+    return [
+        "gdal_translate",
+        "-of",
+        "GTiff",
+        "-srcwin",
+        str(xoff),
+        str(yoff),
+        str(width),
+        str(height),
+        "-co",
+        "COMPRESS=DEFLATE",
+        str(src),
+        str(dst),
     ]
 
 

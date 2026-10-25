@@ -1,0 +1,6 @@
+{
+  "name": "antique",
+  "preset": "antique",
+  "checkpoint": "sdxl/juggernautXL_ragnarokBy/juggernautXL_ragnarokBy.safetensors",
+  "seed": {"scheme": "tile", "base": 0}
+}

@@ -1,4 +1,4 @@
-"""argus-atlas CLI — ``doctor``, ``controls``, ``bake``, ``tiles``, ``inspect``, ``serve``.
+"""argus-atlas CLI — ``doctor``, ``osm``, ``controls``, ``bake``, ``tiles``, ``chunk``, ``inspect``, ``serve``.
 
 Everything works without the HTTP server or studio: ``controls`` needs only
 GDAL, ``bake`` needs a reachable ComfyUI and ``ATLAS_ALLOW_BAKE=1``, ``tiles``
@@ -296,11 +296,10 @@ def tiles(
     min_zoom: int | None = Option(None, "--min-zoom", min=0),
     max_zoom: int | None = Option(None, "--max-zoom", min=0, help="Never finer than the canvas's native zoom"),
 ) -> None:
-    """Cut XYZ tiles from the aligned GeoTIFF (native-2..native) and pack them as PMTiles."""
-    from argus_atlas import gdal_ops
-    from argus_atlas.georef import FANTASY_TIF, AlignmentError, verify_alignment
-    from argus_atlas.jobs import load_sidecar, save_sidecar
-    from argus_atlas.tiles import FANTASY_PMTILES, bake_metadata, build_tiles
+    """Cut XYZ tiles from the aligned GeoTIFF (native-2..native; a chunk's own zoom..native) and pack them as PMTiles."""
+    from argus_atlas.georef import AlignmentError
+    from argus_atlas.jobs import load_sidecar
+    from argus_atlas.tiles import FANTASY_PMTILES, tile_job
 
     job_dir = _job_dir_of(source)
     try:
@@ -310,33 +309,97 @@ def tiles(
         return
     if sidecar.bake is None or not sidecar.bake.aligned:
         _fail(f"{sidecar.job_id} has no aligned GeoTIFF — bake it first (or its alignment gate failed)", EXIT_INPUT)
-    tif = job_dir / FANTASY_TIF
-    zmin, zmax = sidecar.zoom_range
-    zoom = (min_zoom if min_zoom is not None else zmin, max_zoom if max_zoom is not None else zmax)
     try:
-        gdal_ops.require_gdal()
-        verify_alignment(tif, sidecar.grid)  # the gate again, right before tiles are written
-        record = build_tiles(
-            tif,
-            out or job_dir / FANTASY_PMTILES,
-            sidecar.grid,
-            zoom_range=zoom,
-            native_zoom=sidecar.native_zoom,
-            name=sidecar.job_id,
-            work_dir=job_dir,
-            extra_metadata=bake_metadata(sidecar),
-        )
+        record = tile_job(job_dir, sidecar, out=out, min_zoom=min_zoom, max_zoom=max_zoom)
     except AlignmentError as exc:
         _fail(f"alignment gate failed, no tiles written: {exc}", 1)
         return
     except AtlasError as exc:
         _fail(str(exc), 1)
         return
-    sidecar.tiles = record
-    save_sidecar(job_dir, sidecar)
     typer.echo(
         f"{sidecar.job_id}: {record.n_tiles} tiles, zoom {record.min_zoom}-{record.max_zoom} -> {out or job_dir / FANTASY_PMTILES}"
     )
+
+
+@app.command()
+def chunk(
+    tile: str = Option(..., "--tile", "-t", help="XYZ tile z/x/y to bake as one chunk"),
+    recipe: str = Option(..., "--recipe", "-r", help="Recipe file, or a name under $ATLAS_RECIPES_DIR"),
+    dem: Path = Option(..., "--dem", help="Source DEM (GeoTIFF or VRT) covering the tile and its margin"),
+    out: Path | None = Option(None, "--out", "-o", help="Job directory (default $ATLAS_JOBS_DIR/<recipe>-<z>-<x>-<y>)"),
+    neighbours: Path | None = Option(
+        None, "--neighbours", help="Where the recipe's other chunk jobs live (default: the parent of --out)"
+    ),
+    size: int = Option(1024, "--size", help="Tile side in px: 256, 512 or 1024 (native zoom = z + log2(size/256))"),
+    margin: int = Option(128, "--margin", help="Px of neighbour context on every side, a multiple of 32"),
+    land: Path | None = Option(None, "--land", help="Land polygon file (any OGR format): the layer named 'land'"),
+    layer: list[str] = Option([], "--layer", help="name=path vector layer, as for `controls` (repeatable)"),
+    sea_level: float | None = Option(
+        None, "--sea-level", help="Metres: add a 'sea' mask of DEM cells at or below this"
+    ),
+    composite: bool = Option(True, "--composite/--no-composite", help="Paint composite.png from the known layers"),
+    resampling: str | None = Option(None, "--resampling", help="gdalwarp method; default: auto by upsampling ratio"),
+    controls_only: bool = Option(
+        False, "--controls-only", help="Stop after the controls and seam controls (no GPU, no ATLAS_ALLOW_BAKE)"
+    ),
+    models_dir: Path | None = Option(None, "--models-dir", help="Default $ATLAS_MODELS_DIR"),
+    comfyui_url: str | None = Option(None, "--comfyui-url", help="Default $COMFYUI_BASE_URL"),
+) -> None:
+    """One chunk end to end: controls -> seams from baked neighbours -> bake -> crop -> tiles, styled by a recipe."""
+    if not controls_only and not config.bake_allowed():
+        _fail(f"refusing to bake: set {config.ENV_ALLOW_BAKE}=1 (or pass --controls-only)", EXIT_REFUSED)
+
+    from argus_atlas.backends.base import BackendError
+    from argus_atlas.chunks import chunk_job_id, parse_tile, run_chunk
+    from argus_atlas.recipes import load_recipe, recipe_record, recipe_workflow
+
+    job_dir: Path | None = out
+    try:
+        z, x, y = parse_tile(tile)
+        loaded, recipe_path = load_recipe(recipe, recipes_root=config.recipes_dir())
+        layers: dict[str, Path] = {}
+        for item in layer:
+            name, sep, path = item.partition("=")
+            if not sep or not name or not path:
+                raise AtlasError(f"--layer expects name=path, got {item!r}")
+            layers[name] = Path(path)
+        job_dir = out if out is not None else config.jobs_dir() / chunk_job_id(loaded.name, z, x, y)
+        backend = None
+        if not controls_only:
+            from argus_atlas.backends import backend_from_env
+
+            backend = backend_from_env(workflow=recipe_workflow(loaded, recipe_path), base_url=comfyui_url)
+        sidecar = run_chunk(
+            dem,
+            tile,
+            recipe_record(loaded),
+            job_dir,
+            backend=backend,
+            models_root=config.models_dir(models_dir),
+            neighbours_root=neighbours,
+            land=land,
+            layers=layers,
+            sea_level=sea_level,
+            composite=composite,
+            resampling=resampling,
+            size=size,
+            margin=margin,
+            controls_only=controls_only,
+            progress=lambda ev: typer.echo(f"[{ev.type}] {ev.message}", err=ev.type == "error"),
+        )
+    except FileNotFoundError as exc:
+        _fail(str(exc), EXIT_INPUT)
+        return
+    except BackendError as exc:
+        _fail(f"chunk failed: {exc}", 1)
+        return
+    except AtlasError as exc:
+        # An error before job.json exists is an input problem (bad tile, recipe, DEM); after, a runtime one.
+        _fail(f"chunk failed: {exc}", EXIT_INPUT if job_dir is None or not (job_dir / "job.json").is_file() else 1)
+        return
+    timing = ", ".join(f"{k} {v:.1f}s" for k, v in sidecar.timings.items())
+    typer.echo(f"{sidecar.job_id}: chunk {tile} [{sidecar.status}] in {job_dir} ({timing})")
 
 
 @app.command()
@@ -369,9 +432,18 @@ def inspect(
             f"  bake:     {b.backend} {b.engine_version}, {b.checkpoint.name}{lora}, seed {b.params.seed}, denoise {b.params.denoise}"
         )
         typer.echo(f"            aligned={b.aligned}" + (f" error={b.error}" if b.error else ""))
+    if sidecar.chunk:
+        c = sidecar.chunk
+        near = ", ".join(n.tile for n in c.neighbours) or "none"
+        typer.echo(f"  chunk:    {c.tile}, {c.size} px + {c.margin} px margin, neighbours: {near}")
+        typer.echo(f"            crop: {c.image.path if c.image else 'not yet'}")
+    if sidecar.recipe:
+        typer.echo(f"  recipe:   {sidecar.recipe.recipe.name} ({sidecar.recipe.sha256[:12]}…)")
     if sidecar.tiles:
         t = sidecar.tiles
         typer.echo(f"  tiles:    {t.archive.path} — {t.n_tiles} tiles, zoom {t.min_zoom}-{t.max_zoom} ({t.packer})")
+    if sidecar.timings:
+        typer.echo("  timings:  " + ", ".join(f"{k} {v:.2f}s" for k, v in sidecar.timings.items()))
 
 
 @app.command()

@@ -119,7 +119,7 @@ def run_bake(
             lap("georeference")
             sidecar.timings = timings
             if sidecar.chunk is not None:
-                sidecar.chunk = sidecar.chunk.model_copy(update={"image": None})
+                sidecar.chunk = sidecar.chunk.model_copy(update={"image": None, "blend": None})
             sidecar.bake = BakeRecord(
                 params=params,
                 backend=backend.name,
@@ -153,12 +153,22 @@ def run_bake(
         lap("georeference")
         sidecar.timings = timings
         if sidecar.chunk is not None:
-            sidecar.chunk = sidecar.chunk.model_copy(update={"image": None})
+            sidecar.chunk = sidecar.chunk.model_copy(update={"image": None, "blend": None})
         save_sidecar(job_dir, sidecar)
         if sidecar.chunk is not None:
-            from argus_atlas.chunks import crop_chunk
+            from argus_atlas.chunks import blend_chunk, crop_chunk
 
             try:
+                if sidecar.chunk.neighbours:
+                    emit(
+                        "georeference",
+                        f"matching chunk {sidecar.chunk.tile} to {len(sidecar.chunk.neighbours)} neighbour(s)",
+                    )
+                blend, blend_commands = blend_chunk(job_dir, sidecar, description=payload_json(payload))
+                sidecar.chunk = sidecar.chunk.model_copy(update={"blend": blend})
+                sidecar.commands = [*sidecar.commands, *blend_commands]
+                if blend is not None:
+                    lap("blend")
                 emit("georeference", f"cropping the {sidecar.chunk.margin} px margin off chunk {sidecar.chunk.tile}")
                 image, command = crop_chunk(job_dir, sidecar)
             except AtlasError as exc:

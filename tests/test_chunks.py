@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -11,6 +12,8 @@ from argus_atlas.backends.base import BackendError
 from argus_atlas.bake import run_bake
 from argus_atlas.chunks import (
     CHUNK_TIF,
+    RESIDUAL_LIMIT,
+    TONE_LIMIT,
     chunk_bbox,
     chunk_grids,
     chunk_job_id,
@@ -18,8 +21,10 @@ from argus_atlas.chunks import (
     neighbour_tiles,
     parse_tile,
     run_chunk,
+    validate_seams,
 )
 from argus_atlas.georef import AlignmentError
+from argus_atlas.hashing import sha256_file
 from argus_atlas.jobs import copy_job, load_sidecar
 from argus_atlas.mercator import mercator_to_bbox, resolution_at_zoom, tile_bounds
 from argus_atlas.metadata import read_png_payload
@@ -157,14 +162,14 @@ def test_chunk_bakes_crops_and_tiles_inside_the_tile(dem: Path, tmp_path: Path, 
 @requires_gdal
 def test_neighbours_are_pasted_into_the_margin(dem: Path, tmp_path: Path, models_dir: Path) -> None:
     _chunk(dem, tmp_path, A, models_dir)
-    b = _chunk(dem, tmp_path, B, models_dir)
+    b = _chunk(dem, tmp_path, B, models_dir, mask_feather=0)  # hard mask: exact pixel counts
     assert b.chunk is not None and [n.tile for n in b.chunk.neighbours] == [A]
     # A is west of B: the kept strip is the margin's width and the tile's height
     side = SIZE + 2 * MARGIN
     mask = _stats(tmp_path / b.job_id / "seam_mask.png")[0]
     assert mask["mean"] == pytest.approx(255 * (1 - MARGIN * SIZE / side**2), abs=0.01)
 
-    c = _chunk(dem, tmp_path, C, models_dir)
+    c = _chunk(dem, tmp_path, C, models_dir, mask_feather=0)
     assert c.chunk is not None and [n.tile for n in c.chunk.neighbours] == [A, B]
     kept = MARGIN * MARGIN + MARGIN * SIZE  # A touches C's corner, B its top edge
     mask = _stats(tmp_path / c.job_id / "seam_mask.png")[0]
@@ -319,3 +324,102 @@ def test_a_failed_crop_is_recorded(
     assert "crop" in sidecar.timings
     with pytest.raises(NotTileableError, match="never cropped"):
         tile_job(job_dir, sidecar)
+
+
+def _value(path: Path, x: float, y: float) -> list[int]:
+    out = subprocess.run(
+        ["gdallocationinfo", "-valonly", "-geoloc", str(path), repr(x), repr(y)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [int(float(v)) for v in out.stdout.split()]
+
+
+def _seam_jump(root: Path, west: str, east: str) -> int:
+    """Largest RGB difference between the last column of *west*'s crop and the first of *east*'s, mid-height."""
+    xmin, ymin, _, ymax = tile_bounds(*parse_tile(east))
+    res = resolution_at_zoom(14)
+    y = (ymin + ymax) / 2
+    a = _value(root / chunk_job_id("antique", *parse_tile(west)) / CHUNK_TIF, xmin - res / 2, y)
+    b = _value(root / chunk_job_id("antique", *parse_tile(east)) / CHUNK_TIF, xmin + res / 2, y)
+    return max(abs(p - q) for p, q in zip(a[:3], b[:3], strict=True))
+
+
+def test_seam_settings_are_validated() -> None:
+    with pytest.raises(AtlasError, match="mask feather"):
+        validate_seams(256, 32, mask_feather=64, feather=64)
+    with pytest.raises(AtlasError, match="half the tile"):
+        validate_seams(256, 32, mask_feather=0, feather=129)
+    validate_seams(256, 32, mask_feather=32, feather=128)
+
+
+@requires_gdal
+def test_the_soft_mask_fades_on_the_neighbours_side(dem: Path, tmp_path: Path, models_dir: Path) -> None:
+    _chunk(dem, tmp_path, A, models_dir)
+    b = run_chunk(dem, B, RECIPE, tmp_path / "antique-14-8651-5890", size=SIZE, margin=MARGIN, controls_only=True)
+    side = SIZE + 2 * MARGIN
+    mask = _stats(tmp_path / b.job_id / "seam_mask.png")[0]
+    hard = 255 * (1 - MARGIN * SIZE / side**2)
+    assert mask["minimum"] == 0 and mask["maximum"] == 255
+    assert mask["mean"] > hard + 1, "part of the kept strip is now partly repainted"
+    # the tile itself is still painted in full: the fade lives in the margin
+    canvas = b.grid
+    xmin, _, _, ymax = tile_bounds(*parse_tile(B))
+    inside = (xmin + canvas.resolution / 2, ymax - SIZE / 2 * canvas.resolution)
+    assert _value(tmp_path / b.job_id / "seam_mask.tif", *inside) == [255]
+
+
+@requires_gdal
+def test_blend_closes_the_seam_and_keeps_the_painted_canvas(dem: Path, tmp_path: Path, models_dir: Path) -> None:
+    # The fake backend paints the same left-to-right gradient on every canvas, so unblended
+    # neighbours jump by ~200 levels at the seam.
+    raw = tmp_path / "raw"
+    _chunk(dem, raw, A, models_dir, feather=0, tone=False)
+    plain = _chunk(dem, raw, B, models_dir, feather=0, tone=False)
+    assert plain.chunk is not None and plain.chunk.blend is None
+    raw_jump = _seam_jump(raw, A, B)
+    assert raw_jump > 150
+
+    blended = tmp_path / "blended"
+    a = _chunk(dem, blended, A, models_dir)
+    assert a.chunk is not None and a.chunk.blend is None, "no neighbours, nothing to match"
+    b = _chunk(dem, blended, B, models_dir)
+    assert b.chunk is not None and b.chunk.blend is not None
+    assert len(b.chunk.blend.offset) == 3 and b.chunk.blend.feather == 64
+    assert max(abs(o) for o in b.chunk.blend.offset) == pytest.approx(24.0), "the tone shift is capped"
+    # Real seams are a few levels off; this one is ~200, so both caps are reached and it closes by their sum.
+    assert _seam_jump(blended, A, B) <= raw_jump - (TONE_LIMIT + RESIDUAL_LIMIT) + 6
+    job_dir = blended / b.job_id
+    assert b.bake is not None and b.bake.geotiff is not None
+    assert sha256_file(job_dir / "fantasy.tif") == b.bake.geotiff.sha256, "fantasy.tif stays as painted"
+    assert sha256_file(job_dir / "fantasy_blend.tif") == b.chunk.blend.image.sha256
+    assert "blend" in b.timings and not list(job_dir.glob(".blend-*")), "work files are cleaned up"
+    desc = json.loads(
+        subprocess.run(["gdalinfo", "-json", str(job_dir / CHUNK_TIF)], capture_output=True, text=True).stdout
+    )["metadata"][""]["TIFFTAG_IMAGEDESCRIPTION"]
+    assert json.loads(desc)["chunk"] == B, "the crop still carries the bake payload"
+    bands = json.loads(
+        subprocess.run(["gdalinfo", "-json", str(job_dir / CHUNK_TIF)], capture_output=True, text=True).stdout
+    )["bands"]
+    assert [band["colorInterpretation"] for band in bands] == ["Red", "Green", "Blue"], "mosaics with plain crops"
+
+
+@requires_gdal
+def test_seams_work_from_a_read_only_working_directory(
+    dem: Path, tmp_path: Path, models_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # gdal_proximity and gdal_fillnodata drop scratch files into the cwd; the image's /app is not
+    # writable by the baking user (CI runs as root, so only a read-only cwd catches it).
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o555)
+    monkeypatch.chdir(locked)
+    try:
+        if os.access(locked, os.W_OK):
+            pytest.skip("running as root: a read-only directory is still writable")
+        _chunk(dem, tmp_path, A, models_dir)
+        b = _chunk(dem, tmp_path, B, models_dir)
+        assert b.chunk is not None and b.chunk.blend is not None
+    finally:
+        locked.chmod(0o755)

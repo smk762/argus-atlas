@@ -251,6 +251,24 @@ Sheets: [`img/wa-rockingham.jpg`](img/wa-rockingham.jpg), [`img/wa-rottnest.jpg`
 
 Every output of the series carries its request: `exiftool`/Pillow read the PNG's ImageDescription, `gdalinfo` shows `TIFFTAG_IMAGEDESCRIPTION` on the GeoTIFF, and the PMTiles metadata has `argus_bake` — checked on `wa-albany-tolkien`. Rank by preset, seed or AOI from the files alone.
 
+## Albany 3x3 chunk series (25 Oct)
+
+Nine z12 chunks around Albany (`12/3388..3390/2473..2475`, 1024 px + 128 px margin, native z14, ~24 km across) baked with `argus-atlas chunk` row by row from the `antique` recipe (Juggernaut, union ControlNet via a patched seam template, OSM water/rivers/roads/forest/urban at zoom 13, `--sea-level 0`). Each chunk took 45–55 s end to end (generate 23–40 s; verify 4–13 s because each container re-hashes the checkpoint).
+
+Seams measured on the mosaic as the mean RGB step across a chunk edge divided by the step between adjacent pixels inside a chunk (1.0 = invisible), same seeds in every pass:
+
+| pass | seam step | interior step | ratio |
+|---|---|---|---|
+| no neighbours (`--neighbours` an empty path) | 11.33 | 1.81 | 6.3 |
+| neighbours pasted, hard mask, no blend | 8.60 | 1.93 | 4.5 |
+| + soft mask, tone, full-res residual | 3.60 | 1.94 | 1.9 (streaks along coasts) |
+| + residual low-passed only | 6.90 | 1.90 | 3.6 (no streaks, line back) |
+| + two-scale residual (shipped defaults) | 3.76 | 1.91 | 2.0 (no streaks, faint line) |
+
+Rivers and coastlines continue across every seam once neighbours are pasted; the blend removes the colour step in open water and most of the line. What is left is model variance between chunks: two neighbours can still be painted in a slightly different hand (paper-like vs warm relief), which no pixel blend fixes. Jobs: `/home/smk/argus/atlas-jobs/albany-3x3*`.
+
+Two things only a real bake caught: `gdal_proximity`/`gdal_fillnodata` write scratch files into the working directory (`/app` in the image is not writable by `-u $(id -u)`; the tests run as root), and a stacked VRT has no colour interpretation, so `gdalbuildvrt` refused to mosaic blended crops with the first, unblended one.
+
 ## Review the output
 
 `examples/viewer.html` drapes the job on a basemap. On morpheus the API runs from the image and the page from a static server; both are reachable on the LAN:

@@ -37,7 +37,8 @@ from argus_atlas import gdal_ops
 from argus_atlas.hashing import sha256_file
 from argus_atlas.jobs import load_sidecar, save_sidecar
 from argus_atlas.mercator import mercator_to_bbox
-from argus_atlas.models import AtlasError, BBox, FileRef, LabelsRecord
+from argus_atlas.models import SIDECAR_NAME, AtlasError, BBox, FileRef, GdalCommand, Grid, JobSidecar, LabelsRecord
+from argus_atlas.osm import MANIFEST_NAME as OSM_MANIFEST_NAME
 from argus_atlas.osm import PLACE_ORDER, place_classes
 
 logger = structlog.get_logger()
@@ -96,7 +97,9 @@ def _rank(props: dict, scheme: str, zoom: int) -> tuple[int, str] | None:
 
 
 def _inside(lon: float, lat: float, bbox: BBox) -> bool:
-    return bbox.west <= lon <= bbox.east and bbox.south <= lat <= bbox.north
+    # Half-open (west and south edges in, east and north out) so a name on the edge two
+    # neighbouring chunk tiles share lands in exactly one of them.
+    return bbox.west <= lon < bbox.east and bbox.south <= lat < bbox.north
 
 
 def rank_features(features: list[dict], bbox: BBox, zoom: int) -> tuple[list[dict], str | None, dict[str, int]]:
@@ -110,10 +113,11 @@ def rank_features(features: list[dict], bbox: BBox, zoom: int) -> tuple[list[dic
     for feature in features:
         geometry = feature.get("geometry") or {}
         props = feature.get("properties") or {}
-        if geometry.get("type") != "Point":
+        coords = geometry.get("coordinates") or []
+        if geometry.get("type") != "Point" or len(coords) < 2:  # POINT EMPTY is written as "coordinates": []
             dropped["not_a_point"] += 1
             continue
-        lon, lat = (float(v) for v in geometry["coordinates"][:2])
+        lon, lat = float(coords[0]), float(coords[1])
         if not _inside(lon, lat, bbox):  # -spat filters by envelope; re-check against the box itself
             dropped["outside"] += 1
             continue
@@ -160,6 +164,10 @@ def build_labels(source: Path, bbox: BBox, zoom: int, out: Path, *, layer: str |
         raise AtlasError(f"places file not found: {source}")
     if out.suffix.lower() != ".geojson":
         raise AtlasError(f"labels are written as GeoJSON: {out} must end in .geojson")
+    if manifest_path(out).name in (SIDECAR_NAME, OSM_MANIFEST_NAME):
+        raise AtlasError(f"{out.name} would write its manifest over {manifest_path(out).name}; pick another name")
+    if out.exists() and out.resolve() == source.resolve():
+        raise AtlasError(f"{out} is the places file itself; write the labels somewhere else")
     gdal_ops.require_gdal()
     where = None
     if _is_osm(source):
@@ -200,12 +208,49 @@ def build_labels(source: Path, bbox: BBox, zoom: int, out: Path, *, layer: str |
     return manifest
 
 
+def labelled_grid(sidecar: JobSidecar) -> Grid:
+    """The grid a job's names are clipped to: the canvas, or a chunk's inner tile."""
+    return sidecar.chunk.inner if sidecar.chunk else sidecar.grid
+
+
+def _manifest_commands(out: Path) -> list[GdalCommand]:
+    """The ogr2ogr commands the ``labels.json`` beside *out* records (none if it is missing or unreadable)."""
+    try:
+        manifest = json.loads(manifest_path(out).read_text(encoding="utf-8"))
+        return [GdalCommand.model_validate(c) for c in manifest.get("commands", [])]
+    except (OSError, ValueError, AttributeError):
+        return []
+
+
+def kept_labels(job_dir: Path, grid: Grid) -> tuple[LabelsRecord | None, list[GdalCommand]]:
+    """The labels record (and its recorded ogr2ogr) of the job already in *job_dir*, if they were
+    made for *grid* and ``labels.geojson`` is intact.
+
+    Names depend on the labelled grid alone, so re-running controls or a chunk on the same grid (a
+    re-bake) keeps them instead of orphaning ``labels.geojson`` behind a fresh ``job.json``.
+    """
+    try:
+        old = load_sidecar(job_dir)
+    except (OSError, AtlasError):
+        return None, []
+    record = old.labels
+    if record is None or labelled_grid(old) != grid:
+        return None, []
+    path = job_dir / record.file.path
+    if not path.is_file() or sha256_file(path) != record.file.sha256:
+        return None, []
+    commands = _manifest_commands(path)
+    return record, [c for c in old.commands if c in commands]
+
+
 def label_job(job_dir: Path, source: Path, *, zoom: int | None = None, layer: str | None = None) -> LabelsRecord:
     """Label a job's canvas (a chunk's tile) at its native zoom and record it in ``job.json``."""
     sidecar = load_sidecar(job_dir)
-    grid = sidecar.chunk.inner if sidecar.chunk else sidecar.grid
+    grid = labelled_grid(sidecar)
     zoom = sidecar.native_zoom if zoom is None else zoom
-    manifest = build_labels(source, mercator_to_bbox(*grid.bounds), zoom, job_dir / LABELS_NAME, layer=layer)
+    out = job_dir / LABELS_NAME
+    previous = _manifest_commands(out) if sidecar.labels else []  # replaced, not stacked, on a re-run
+    manifest = build_labels(source, mercator_to_bbox(*grid.bounds), zoom, out, layer=layer)
     record = LabelsRecord(
         source=FileRef(path=manifest["source"]["path"], sha256=manifest["source"]["sha256"]),
         scheme=manifest["scheme"],
@@ -215,5 +260,11 @@ def label_job(job_dir: Path, source: Path, *, zoom: int | None = None, layer: st
         file=FileRef(path=LABELS_NAME, sha256=manifest["output"]["sha256"]),
         completed_at=manifest["created_at"],
     )
-    save_sidecar(job_dir, sidecar.model_copy(update={"labels": record}))
+    # Re-read: a bake or tiles run may have rewritten job.json while ogr2ogr ran.
+    current = load_sidecar(job_dir)
+    if labelled_grid(current) != grid:
+        raise AtlasError(f"{job_dir.name}: the job's grid changed while labelling; run labels again")
+    kept = [c for c in current.commands if c not in previous]
+    commands = [GdalCommand.model_validate(c) for c in manifest["commands"]]
+    save_sidecar(job_dir, current.model_copy(update={"labels": record, "commands": [*kept, *commands]}))
     return record

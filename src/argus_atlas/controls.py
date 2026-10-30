@@ -27,6 +27,7 @@ import structlog
 from argus_atlas import gdal_ops
 from argus_atlas.hashing import sha256_file
 from argus_atlas.jobs import require_safe_id, save_sidecar
+from argus_atlas.labels import kept_labels
 from argus_atlas.mercator import bbox_to_mercator, mercator_to_bbox, native_zoom, zoom_range
 from argus_atlas.models import (
     ALIGN_TOLERANCE,
@@ -274,6 +275,8 @@ def build_controls(
         controls[kind] = FileRef(path=png.name, sha256=sha256_file(png))
 
     native = native_zoom(grid.resolution)
+    # Place names depend on the labelled grid only: a re-run on the same grid (a chunk re-bake) keeps them.
+    labels, label_commands = kept_labels(out_dir, chunk.inner if chunk is not None else grid)
     layer_sources = {n: FileRef(path=str(p.resolve()), sha256=sha256_file(p)) for n, p in sources.items()}
     sidecar = JobSidecar(
         job_id=job_id,
@@ -287,8 +290,9 @@ def build_controls(
         native_zoom=native,
         zoom_range=(chunk.z, native) if chunk is not None else zoom_range(native),
         controls=controls,
-        commands=commands,
+        commands=[*commands, *label_commands],
         chunk=chunk,
+        labels=labels,
         timings={"controls": round(time.perf_counter() - started, 3)},
     )
     save_sidecar(out_dir, sidecar)

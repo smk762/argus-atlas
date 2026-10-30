@@ -47,8 +47,8 @@ class LayerPreset:
     """One thematic layer: which OSM layer GDAL exposes it on, and the tag
     rules per zoom (the entry with the largest ``min_zoom <= zoom`` applies)."""
 
-    geometry: str  # "polygon" | "line"
-    osm_layer: str  # "multipolygons" | "lines" (GDAL OSM driver layer names)
+    geometry: str  # "polygon" | "line" | "point"
+    osm_layer: str  # "multipolygons" | "lines" | "points" (GDAL OSM driver layer names)
     rules: dict[int, dict[str, list[str] | None]] = field(default_factory=dict)  # min_zoom -> {tag: values|None(any)}
     min_zoom: int = 0  # below this the layer is empty on purpose
 
@@ -61,6 +61,23 @@ ROADS_MAJOR = ["motorway", "motorway_link", "trunk", "trunk_link"]
 ROADS_PRIMARY = ROADS_MAJOR + ["primary", "primary_link"]
 ROADS_SECONDARY = ROADS_PRIMARY + ["secondary", "secondary_link", "tertiary", "tertiary_link"]
 ROADS_ALL = ROADS_SECONDARY + ["unclassified", "residential", "living_street", "pedestrian"]
+
+# place=* classes, most important first; their index is a label's rank. The entry with the largest
+# min_zoom <= zoom says which classes survive at that zoom (`argus-atlas labels`, the `places` layer).
+PLACE_ORDER = ["city", "town", "village", "suburb", "hamlet", "neighbourhood", "locality", "isolated_dwelling"]
+PLACE_RULES: dict[int, list[str]] = {
+    0: PLACE_ORDER[:1],
+    8: PLACE_ORDER[:2],
+    11: PLACE_ORDER[:3],
+    13: PLACE_ORDER[:5],
+    15: PLACE_ORDER,
+}
+
+
+def place_classes(zoom: int) -> list[str]:
+    """The ``place=*`` values whose names survive at *zoom*."""
+    return PLACE_RULES[max(z for z in PLACE_RULES if z <= zoom)]
+
 
 LAYER_PRESETS: dict[str, LayerPreset] = {
     "water": LayerPreset(
@@ -95,6 +112,8 @@ LAYER_PRESETS: dict[str, LayerPreset] = {
     ),
     "buildings": LayerPreset("polygon", "multipolygons", {13: {"building": None}}, min_zoom=13),
     "glaciers": LayerPreset("polygon", "multipolygons", {0: {"natural": ["glacier"]}}),
+    # Named place nodes for `argus-atlas labels` (a vector overlay); not a control the model paints.
+    "places": LayerPreset("point", "points", {z: {"place": classes} for z, classes in PLACE_RULES.items()}),
 }
 
 
@@ -121,6 +140,9 @@ def build_query(bbox: BBox, layers: list[str], zoom: int, *, timeout: int = 180)
         preset = _preset(name)
         for tag, values in preset.tags_for(zoom).items():
             flt = _overpass_filter(tag, values)
+            if preset.geometry == "point":
+                clauses.append(f"node{flt}{area};")
+                continue
             clauses.append(f"way{flt}{area};")
             if preset.geometry == "polygon":
                 clauses.append(f"relation{flt}{area};")

@@ -79,6 +79,19 @@ To grow a map piece by piece, bake it one XYZ tile at a time. `argus-atlas chunk
 
 `--controls-only` stops after the seam controls and needs no GPU.
 
+## Place names
+
+The prompts forbid text, because diffusion paints illegible lettering and breaks tile seams, so the bake has no names. `argus-atlas labels` adds them as a vector overlay the viewer draws on top, in a real font. Names never reach the model, `fantasy.tif` or the PMTiles.
+
+```bash
+# Label a job: the box is its canvas (a chunk's tile), the cutoff its native zoom.
+argus-atlas labels --source ne_10m_populated_places.shp --job jobs/sample
+# Or any box, for use outside a job.
+argus-atlas labels --source places.osm.pbf --bbox 10.60,45.44,10.76,45.60 --zoom 13 --out labels.geojson
+```
+
+The source is a file you already have: Natural Earth populated places (ranked by `SCALERANK` <= zoom − 2), a Geofabrik `.osm.pbf` or `.osm` (by `place` class: cities from zoom 0, towns from 8, villages from 11, suburbs and hamlets from 13, the rest from 15), or the `places` layer of `argus-atlas osm`. Points outside the box or below the cutoff are dropped. The output has `name`, `rank` and `kind` per point, in EPSG:4326. `labels.json` beside it records the source and its SHA256, the cutoff and the ogr2ogr argv; with `--job`, `job.json` gains a `labels` record and `GET /jobs/{id}/labels` serves the file. No route builds labels. `examples/viewer.html` draws them over the raster, so they stay put while the opacity slider fades the bake. [`examples/sample_places.geojson`](https://github.com/smk762/argus-atlas/blob/main/examples/sample_places.geojson) labels the sample DEM.
+
 ## Live demo
 
 A hosted demo will be linked here. Until then, [`examples/flow.html`](https://github.com/smk762/argus-atlas/blob/main/examples/flow.html) runs the whole flow against a local server (AOI, OSM layers, controls, bake, tiles, drape) and [`examples/viewer.html`](https://github.com/smk762/argus-atlas/blob/main/examples/viewer.html) drapes any baked job on a MapLibre basemap with an opacity slider: start `argus-atlas serve --cors` (with `ATLAS_CORS_ORIGINS='*'`) and open the page, or feed it a `fantasy.pmtiles` directly. The first real AOI (Lake Garda, Copernicus GLO-30, Juggernaut XL, no LoRA) passed the alignment gate on 17 Oct 2026; the commands are in [`docs/first-bake.md`](https://github.com/smk762/argus-atlas/blob/main/docs/first-bake.md).
@@ -203,6 +216,7 @@ jobs/aoi-1/
   fantasy.png       # raw model output, kept even if the gate fails
   fantasy.tif       # written only after the alignment gate passes
   fantasy.pmtiles   # zoom range native-2 .. native, bounded to the AOI
+  labels.geojson    # place names for the viewer (only after `labels --job`), labels.json beside it
 ```
 
 ### Defaults
@@ -265,6 +279,7 @@ Port 8105, a peer of the other suite servers. CORS from `ATLAS_CORS_ORIGINS`, de
 | `GET /jobs/{id}` | sidecar and status |
 | `GET /jobs/{id}/preview/{kind}` | `hillshade`, `slope`, `land`, or `fantasy`. Ids only, no path input |
 | `GET /jobs/{id}/archive` | the PMTiles bytes |
+| `GET /jobs/{id}/labels` | the place-name GeoJSON written by `labels --job`. Read-only: the CLI builds it |
 
 Progress events on the bake stream, in order: `controls`, `generate`, `georeference`, then `done` or `error`.
 

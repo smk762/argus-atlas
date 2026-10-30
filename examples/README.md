@@ -26,7 +26,7 @@ Two ways to load a job:
 
 - **From a local `fantasy.pmtiles`** via the file picker (no server; the file is range-read in the browser).
 
-Controls: opacity slider, "painted map" / "hillshade control" toggles, hold space to peek at the basemap.
+Controls: opacity slider, "painted map" / "hillshade control" / "place names" / "basemap labels" toggles, hold space to peek at the basemap. A job with labels (`argus-atlas labels --job`) gets its names drawn on top from `GET /jobs/{id}/labels`; without a server, pick a `labels.geojson` under the local-file section.
 
 ## `sample_dem.tif`
 
@@ -34,6 +34,12 @@ A 577x577-cell, 350 KB clip of Copernicus GLO-30 around the south end of Lake Ga
 
 ```bash
 argus-atlas controls --dem examples/sample_dem.tif --bbox 10.60,45.44,10.76,45.60 --out jobs/sample
+```
+
+`sample_places.geojson` is eight hand-placed towns and villages around it in OSM spelling (`name`, `place`; approximate positions). Six fall inside the canvas; Desenzano and Verona are outside, so they show the clipping:
+
+```bash
+argus-atlas labels --source examples/sample_places.geojson --job jobs/sample
 ```
 
 Attribution, as the Copernicus DEM licence requires: produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved.

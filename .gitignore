@@ -14,3 +14,9 @@ jobs/
 
 # Baked series exported for hand-off (zips, per-AOI job copies)
 output/
+
+# Docker Compose: host settings and the default mount dirs (kept by their .gitkeep)
+.env
+!data/jobs/
+data/*/*
+!data/*/.gitkeep

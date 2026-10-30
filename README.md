@@ -307,12 +307,27 @@ uv pip install "argus-atlas[dev]"          # pytest, httpx, ruff
 
 Python 3.11 or newer. MIT. GDAL (`gdal-bin`, including `gdal2tiles.py`) is a system dependency; `argus-atlas doctor` and `GET /health` report its version and fail clearly when it is missing. PMTiles packing uses the Python `pmtiles` library from the `tiles` extra, because the Go `pmtiles` CLI cannot pack an XYZ directory; the Docker image therefore does not ship the Go CLI.
 
+### Docker Compose
+
+No GDAL on the host, or no sudo to install it? `compose.yaml` runs the CLI and the API from the image, with your paths and flags in `.env`:
+
+```bash
+cp .env.example .env          # set UID/GID (`id -u`, `id -g`) and the *_HOST paths
+docker compose run --rm atlas doctor
+docker compose run --rm atlas dem --bbox 10.60,45.44,10.76,45.60 --out /data/dem/garda.tif
+docker compose run --rm atlas controls --dem /data/dem/garda.tif --bbox 10.60,45.44,10.76,45.60 --out /data/out/atlas/sample
+docker compose up -d serve    # the API on 127.0.0.1:8105 (ATLAS_BIND, ATLAS_PORT)
+```
+
+`atlas` is `argus-atlas` in a one-shot container, so any command works after it. Paths on its command line are container paths. The host directories in `ATLAS_DEM_HOST`, `ATLAS_RECIPES_HOST`, `ATLAS_MODELS_HOST` and `ATLAS_JOBS_HOST` (default `./data/{dem,models,jobs}` and `examples/recipes`) are mounted at `/data/dem`, `/data/recipes`, `/data/models` and `/data/out/atlas`, and the bundled `examples/` are in the working directory. The container runs as your uid, so job files are yours, and reaches a ComfyUI on the host at `host.docker.internal:8188`. ComfyUI itself is not part of this file, and baking stays off until `ATLAS_ALLOW_BAKE=1`. argus-studio deploys atlas through its own compose; this one is for operators and development.
+
 ## Develop
 
 ```bash
 make install   # venv + editable install with the "dev,server,cli,tiles" extras
 make test
 make lint
+docker compose --profile test run --rm test   # the suite against real GDAL, no host install
 ```
 
 Versioning is derived from git tags via `hatch-vcs`; tag `vX.Y.Z` to cut a release. CI is a standalone workflow that apt-installs `gdal-bin` and `python3-gdal` before running the suite, since the tests drive real GDAL on a synthetic DEM. Release publishes to PyPI (OIDC trusted publishing) and GHCR on `v*` tags. This repo was scaffolded from [`argus-pkg-template`](https://github.com/smk762/argus-pkg-template); run `copier update` to pull template changes.

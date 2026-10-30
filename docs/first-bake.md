@@ -37,6 +37,8 @@ argus-atlas pins the checkpoint and LoRA by SHA256, so `ATLAS_MODELS_DIR` must s
    curl -LO https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N45_00_E010_00_DEM/Copernicus_DSM_COG_10_N45_00_E010_00_DEM.tif
    ```
 
+   Or clip just the AOI from the bucket, across tile edges if needed: `argus-atlas dem --bbox 10.55,45.40,10.95,45.90 --out /srv/argus/dem/garda.tif` (provenance in `garda.json`).
+
    Suggested AOI: `--bbox 10.55,45.40,10.95,45.90`. At the default 1024 canvas this plans **576x1024 px at 77.8 m/px, native zoom 11, archive zooms 9–11** (the box is taller than wide in Web Mercator, so the long side is the height).
 
 3. **Optional: a land polygon** (`--land`) for the land mask. Not needed for the first bake. Any OGR-readable file works (GeoJSON, GPKG). Natural Earth 10m land is a quick source if wanted.

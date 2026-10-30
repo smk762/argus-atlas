@@ -1,4 +1,4 @@
-"""argus-atlas CLI — ``doctor``, ``osm``, ``controls``, ``bake``, ``tiles``, ``chunk``, ``inspect``, ``serve``.
+"""argus-atlas CLI — ``doctor``, ``dem``, ``osm``, ``controls``, ``bake``, ``tiles``, ``chunk``, ``inspect``, ``serve``.
 
 Everything works without the HTTP server or studio: ``controls`` needs only
 GDAL, ``bake`` needs a reachable ComfyUI and ``ATLAS_ALLOW_BAKE=1``, ``tiles``
@@ -184,6 +184,38 @@ def controls(
     for kind, ref in sidecar.controls.items():
         typer.echo(f"  {kind:<10}{out / ref.path}  {ref.sha256[:12]}…")
     typer.echo(f"  sidecar   {out / 'job.json'}")
+
+
+@app.command()
+def dem(
+    bbox: str = Option(..., "--bbox", help="AOI as west,south,east,north in EPSG:4326 degrees"),
+    out: Path = Option(..., "--out", "-o", help="GeoTIFF to write (provenance in <out>.json beside it)"),
+    source: str | None = Option(
+        None, "--source", help="GLO-30 bucket URL, mirror or local dir of <key>/<key>.tif (default $ATLAS_DEM_SOURCE)"
+    ),
+    allow_missing: bool = Option(
+        False, "--allow-missing", help="Fill tiles the source lacks (all-ocean ones) with 0 m instead of failing"
+    ),
+) -> None:
+    """Clip Copernicus GLO-30 to an AOI into one GeoTIFF for `controls --dem`. Needs the network (or a mirror)."""
+    from argus_atlas import gdal_ops
+    from argus_atlas.dem import ATTRIBUTION, DemSourceError, fetch_dem
+
+    try:
+        manifest = fetch_dem(BBox.parse(bbox), out, source=config.dem_source(source), allow_missing=allow_missing)
+    except (gdal_ops.GdalError, DemSourceError) as exc:
+        _fail(f"dem failed: {exc}", 1)
+        return
+    except AtlasError as exc:
+        _fail(f"dem failed: {exc}", EXIT_INPUT)
+        return
+    typer.echo(f"{out}: {manifest['output']['bytes'] / 1e6:.1f} MB from {len(manifest['tiles'])} tile(s)")
+    for key in manifest["tiles"]:
+        typer.echo(f"  {key}")
+    for key in manifest["missing"]:
+        typer.echo(f"  {key}  (absent, filled with 0 m)")
+    typer.echo(f"  provenance  {out.with_suffix('.json')}")
+    typer.echo(f"Copernicus DEM: {ATTRIBUTION}")
 
 
 @app.command()

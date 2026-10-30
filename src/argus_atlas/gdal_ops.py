@@ -192,6 +192,52 @@ def warp_argv(dem: Path, dst: Path, grid: Grid, *, resampling: str = "bilinear")
     ]
 
 
+def dem_clip_argv(
+    sources: list[str],
+    dst: Path,
+    bounds: tuple[float, float, float, float],
+    res: tuple[float, float],
+    *,
+    fill: float = 0.0,
+) -> list[str]:
+    """Mosaic and clip DEM tiles to *bounds* in their own CRS and pixel lattice (Float32 GeoTIFF).
+
+    *bounds* must already be snapped to the lattice, so ``-te`` + ``-ts`` land on the source pixel
+    centres and bilinear returns them unchanged; it only interpolates where tiles of another
+    latitude band have a coarser lattice. ``INIT_DEST`` fills any ground no source covers with *fill*; ``GDAL_DISABLE_READDIR_ON_OPEN``
+    keeps ``/vsicurl/`` from listing the bucket for every tile.
+    """
+    xmin, ymin, xmax, ymax = bounds
+    width, height = round((xmax - xmin) / res[0]), round((ymax - ymin) / res[1])
+    return [
+        "gdalwarp",
+        "--config",
+        "GDAL_DISABLE_READDIR_ON_OPEN",
+        "EMPTY_DIR",
+        "-overwrite",
+        "-te",
+        repr(xmin),
+        repr(ymin),
+        repr(xmax),
+        repr(ymax),
+        "-ts",
+        str(width),
+        str(height),
+        "-r",
+        "bilinear",
+        "-ot",
+        "Float32",
+        "-wo",
+        f"INIT_DEST={fill:g}",
+        "-co",
+        "COMPRESS=DEFLATE",
+        "-co",
+        "TILED=YES",
+        *sources,
+        str(dst),
+    ]
+
+
 def hillshade_argv(dem_3857: Path, dst: Path, *, azimuth: float = 315.0, altitude: float = 45.0) -> list[str]:
     """Byte hillshade. ``-compute_edges`` keeps the border lit, so the model is
     not handed a one-pixel black frame to imitate."""

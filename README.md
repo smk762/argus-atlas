@@ -118,6 +118,15 @@ argus-atlas controls \
 argus-atlas inspect ./jobs/sample       # sidecar: geotransform, canvas size, SHA256s, GDAL argv
 ```
 
+For your own AOI, fetch the DEM first. `argus-atlas dem` finds the Copernicus GLO-30 tiles the bbox touches on the public AWS bucket (no login), reads only the needed windows of the COGs, and writes one GeoTIFF on their own pixel lattice, snapped inside the bbox:
+
+```bash
+argus-atlas dem --bbox 10.55,45.40,10.95,45.90 --out dem/garda.tif   # provenance in dem/garda.json
+argus-atlas controls --dem dem/garda.tif --bbox 10.55,45.40,10.95,45.90 --out ./jobs/garda
+```
+
+A tile the bucket lacks is an error that names it. Copernicus leaves out all-ocean tiles, so for a coast pass `--allow-missing` to fill them with 0 m, the sea level GLO-30 uses elsewhere. `--source` (or `ATLAS_DEM_SOURCE`) points at a mirror URL or a local directory laid out as `<key>/<key>.tif`. The command prints the Copernicus attribution; keep it with anything you publish. `controls` may widen the canvas past the bbox to reach whole multiples of 64 px, and cells outside the DEM become NoData, so fetch a slightly larger bbox if the edges matter. There is no server route for this: it is an open-ended download plus a GDAL job, and it belongs with the operator who builds a job.
+
 Open `jobs/sample/hillshade.png`. If the relief looks right, the georeferencing is already fixed; the bake only changes pixel colours inside that frame.
 
 ### Three ways to bake
@@ -278,6 +287,7 @@ Progress events on the bake stream, in order: `controls`, `generate`, `georefere
 |---|---|---|
 | `ATLAS_JOBS_DIR` | `/data/out/atlas` | Sidecars, controls, GeoTIFFs, PMTiles |
 | `ATLAS_DEM_DIR` | `/data/dem` | Only DEMs under here can be named by the API |
+| `ATLAS_DEM_SOURCE` | `https://copernicus-dem-30m.s3.amazonaws.com` | Where the `dem` command finds GLO-30 tiles (a mirror URL or a local dir) |
 | `ATLAS_ALLOW_BAKE` | unset | `1` enables `POST /bake/stream` |
 | `ATLAS_BACKEND` | `comfyui` | Backend key |
 | `COMFYUI_BASE_URL` | `http://host.docker.internal:8188` | ComfyUI on the compose host |
@@ -317,7 +327,7 @@ The launch and onboarding plan lives in [TODO.md](TODO.md). Agents working in th
 
 ## Not in v0
 
-- Downloading a DEM. The caller passes a local path; atlas records it and its SHA256.
+- Downloading a DEM on the server. `argus-atlas dem` fetches Copernicus GLO-30 from the CLI; the API only names DEMs already under `ATLAS_DEM_DIR`.
 - Training, captioning, or curating.
 - A worldwide pyramid, or merging chunk archives into one (chunks are laid side by side by the caller).
 - Serving tiles beyond `GET` of the finished PMTiles file.

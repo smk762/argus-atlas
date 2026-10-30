@@ -24,6 +24,7 @@ ENV_CORS_ORIGINS = "ATLAS_CORS_ORIGINS"
 ENV_ALLOW_OSM = "ATLAS_ALLOW_OSM"
 ENV_OVERPASS_URL = "ATLAS_OVERPASS_URL"
 ENV_RECIPES_DIR = "ATLAS_RECIPES_DIR"
+ENV_DEM_SOURCE = "ATLAS_DEM_SOURCE"
 
 DEFAULT_JOBS_DIR = "/data/out/atlas"
 DEFAULT_DEM_DIR = "/data/dem"
@@ -110,6 +111,13 @@ def overpass_url(override: str | None = None) -> str:
     from argus_atlas.osm import DEFAULT_OVERPASS_URL
 
     return override or os.environ.get(ENV_OVERPASS_URL) or DEFAULT_OVERPASS_URL
+
+
+def dem_source(override: str | None = None) -> str:
+    """Where ``argus-atlas dem`` finds Copernicus GLO-30 tiles: the public bucket, a mirror, or a local dir."""
+    from argus_atlas.dem import DEFAULT_DEM_SOURCE
+
+    return override or os.environ.get(ENV_DEM_SOURCE) or DEFAULT_DEM_SOURCE
 
 
 def resolve_under_root(root: Path, candidate: str, label: str = "path") -> Path:

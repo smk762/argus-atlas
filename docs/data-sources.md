@@ -6,7 +6,7 @@ Anything OGR can read works as a `controls --layer name=path` input, in any CRS;
 
 | Source | What | Used as |
 |---|---|---|
-| **Copernicus GLO-30** on AWS, `https://copernicus-dem-30m.s3.amazonaws.com/` | 30 m global DSM, 1x1° COG tiles, no login; sea at exactly 0 m | `--dem` (`docs/first-bake.md`); `--sea-level 0` derives the `sea` mask from it. Attribution required (see `examples/README.md`). |
+| **Copernicus GLO-30** on AWS, `https://copernicus-dem-30m.s3.amazonaws.com/` | 30 m global DSM, 1x1° COG tiles, no login; sea at exactly 0 m | `argus-atlas dem --bbox … --out dem.tif` fetches and clips it, then `--dem` (`docs/first-bake.md`); `--sea-level 0` derives the `sea` mask from it. Attribution required (see `examples/README.md`). |
 | **OpenStreetMap via Overpass**, `https://overpass-api.de/api/interpreter` | Live OSM features for a bbox | `argus-atlas osm` / `POST /osm`: water, rivers, roads, rail, forest, urban, buildings, glaciers. Rate-limited: one call per AOI, pause between calls, reuse extracts. No ocean polygons (coastline is a line), hence the DEM sea mask. |
 | **OpenFreeMap**, `https://tiles.openfreemap.org/styles/liberty` | Vector basemap, no key | The viewer and flow pages' basemap. |
 

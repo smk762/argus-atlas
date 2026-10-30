@@ -13,7 +13,7 @@ everything that is not a service road or track; ``buildings`` only exist from
 zoom 13. Pass the job's native zoom (``controls`` prints it) so a 78 m/px
 canvas is not swamped by footpaths.
 
-This is the one place atlas talks to the network, and it is a CLI step the
+This and the `dem` command are where atlas talks to the network; it is a CLI step the
 operator runs (never a server route): OSM data is ODbL and the extract is a
 recorded input like the DEM.
 """

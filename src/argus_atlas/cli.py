@@ -1,4 +1,4 @@
-"""argus-atlas CLI — ``doctor``, ``osm``, ``controls``, ``bake``, ``tiles``, ``chunk``, ``inspect``, ``serve``.
+"""argus-atlas CLI — ``doctor``, ``osm``, ``controls``, ``bake``, ``tiles``, ``chunk``, ``labels``, ``inspect``, ``serve``.
 
 Everything works without the HTTP server or studio: ``controls`` needs only
 GDAL, ``bake`` needs a reachable ComfyUI and ``ATLAS_ALLOW_BAKE=1``, ``tiles``
@@ -427,6 +427,47 @@ def chunk(
 
 
 @app.command()
+def labels(
+    source: Path = Option(
+        ...,
+        "--source",
+        "-s",
+        help="Places file: Natural Earth populated places, an OSM .osm/.pbf, or an osm places layer",
+    ),
+    job: Path | None = Option(
+        None, "--job", help="Job dir: label its canvas at its native zoom into labels.geojson, recorded in job.json"
+    ),
+    bbox: str | None = Option(None, "--bbox", help="Without --job: west,south,east,north in EPSG:4326 degrees"),
+    zoom: int | None = Option(None, "--zoom", "-z", min=0, max=19, help="Rank cutoff zoom (default: the job's native)"),
+    out: Path | None = Option(None, "--out", "-o", help="Without --job: the .geojson to write (labels.json beside it)"),
+    source_layer: str | None = Option(None, "--source-layer", help="Layer of a multi-layer source (default: first)"),
+) -> None:
+    """Place names for the drape: rank and clip a local places file to GeoJSON. The model never sees them."""
+    from argus_atlas.labels import build_labels, label_job, manifest_path
+
+    try:
+        if job is not None:
+            if bbox is not None or out is not None:
+                raise AtlasError("--job takes its bbox and output from the job; drop --bbox/--out")
+            job_dir = _job_dir_of(job)
+            record = label_job(job_dir, source, zoom=zoom, layer=source_layer)
+            target, count, cutoff = job_dir / record.file.path, record.count, record.cutoff
+        else:
+            if bbox is None or zoom is None or out is None:
+                raise AtlasError("without --job, pass --bbox, --zoom and --out")
+            manifest = build_labels(source, BBox.parse(bbox), zoom, out, layer=source_layer)
+            target, count, cutoff = out, manifest["count"], manifest["cutoff"]
+    except FileNotFoundError as exc:
+        _fail(str(exc), EXIT_INPUT)
+        return
+    except AtlasError as exc:  # GdalError included
+        _fail(f"labels failed: {exc}", EXIT_INPUT)
+        return
+    typer.echo(f"{count} names ({cutoff}) -> {target}")
+    typer.echo(f"  manifest  {manifest_path(target)}")
+
+
+@app.command()
 def inspect(
     job: Path = Argument(..., help="A job dir (or a file inside it)"),
     json_out: bool = Option(False, "--json", help="Print the sidecar as JSON"),
@@ -465,6 +506,11 @@ def inspect(
             typer.echo(f"            blend: tone offset {c.blend.offset}, seam feather {c.blend.feather} px")
     if sidecar.recipe:
         typer.echo(f"  recipe:   {sidecar.recipe.recipe.name} ({sidecar.recipe.sha256[:12]}…)")
+    if sidecar.labels:
+        lb = sidecar.labels
+        typer.echo(
+            f"  labels:   {lb.file.path} — {lb.count} names at zoom {lb.zoom} ({lb.cutoff}) from {lb.source.path}"
+        )
     if sidecar.tiles:
         t = sidecar.tiles
         typer.echo(f"  tiles:    {t.archive.path} — {t.n_tiles} tiles, zoom {t.min_zoom}-{t.max_zoom} ({t.packer})")

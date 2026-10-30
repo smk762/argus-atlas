@@ -1,0 +1,117 @@
+{
+ "type": "FeatureCollection",
+ "features": [
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "Sirmione",
+    "place": "town"
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     10.607,
+     45.493
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "Lazise",
+    "place": "town"
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     10.7325,
+     45.5053
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "Bardolino",
+    "place": "town"
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     10.722,
+     45.549
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "Garda",
+    "place": "town"
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     10.707,
+     45.577
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "Cisano",
+    "place": "village"
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     10.729,
+     45.524
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "Pacengo",
+    "place": "village"
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     10.722,
+     45.468
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "Desenzano del Garda",
+    "place": "town"
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     10.538,
+     45.469
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "Verona",
+    "place": "city"
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     10.992,
+     45.438
+    ]
+   }
+  }
+ ]
+}

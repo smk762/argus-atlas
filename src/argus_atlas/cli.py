@@ -462,6 +462,33 @@ def chunk(
 
 
 @app.command()
+def mosaic(
+    style_dir: Path = Argument(..., help="Style dir holding the chunk jobs of one recipe"),
+    out: Path = Option(..., "--out", "-o", help="XYZ directory, or a .pmtiles file"),
+    overview_min: int = Option(
+        5, "--overview-min", min=0, max=14, help="Coarsest overview zoom built below the chunk zoom"
+    ),
+) -> None:
+    """Lay every chunk of a style into one tile set, with overview zooms and merged labels."""
+    from argus_atlas.mosaic import mosaic as build_mosaic
+
+    try:
+        manifest = build_mosaic(style_dir, out, overview_min=overview_min)
+    except FileNotFoundError as exc:
+        _fail(str(exc), EXIT_INPUT)
+        return
+    except AtlasError as exc:  # MosaicError, TilesError, GdalError included
+        _fail(f"mosaic failed: {exc}", 1)
+        return
+    typer.echo(
+        f"{out}: {manifest['n_tiles']} tiles, zoom {manifest['min_zoom']}-{manifest['max_zoom']} "
+        f"from {len(manifest['chunks'])} chunk(s)"
+    )
+    typer.echo(f"  labels    {manifest['labels']['count']} name(s) in {manifest['labels']['path']}")
+    typer.echo(f"  bounds    {manifest['bounds']}")
+
+
+@app.command()
 def labels(
     source: Path = Option(
         ...,

@@ -209,7 +209,10 @@ def osm(
         return
     typer.echo(f"{out}: {manifest['extract']['bytes'] / 1e6:.1f} MB extract, osm_base {manifest['osm_base']}")
     for name, ref in manifest["layers"].items():
-        typer.echo(f"  --layer {name}={out / ref['path']}")
+        if LAYER_PRESETS[name].geometry == "point":  # place names: an overlay for `labels`, never a control
+            typer.echo(f"  labels --source {out / ref['path']}")
+        else:
+            typer.echo(f"  --layer {name}={out / ref['path']}")
     for name in manifest["skipped"]:
         typer.echo(f"  {name}: skipped (empty at zoom {zoom})")
 

@@ -333,6 +333,7 @@
     try {
       removeLayer(HILLSHADE);
       $("show-hillshade").disabled = true; $("show-hillshade").checked = false;
+      clearLabels(); $("labels-file").value = "";  // a server job's names do not belong on another raster
       await showArchive(new FileSource(file), file.name);
     } catch (err) {
       status(`Cannot open ${file.name}: ${err.message}`, true);

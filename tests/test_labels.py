@@ -60,6 +60,23 @@ def test_rank_features_osm_scheme_and_drops() -> None:
     assert dropped == {"not_a_point": 1, "outside": 0, "unnamed": 1, "below_cutoff": 1}
 
 
+def test_rank_features_edges_are_half_open_and_empty_points_dropped() -> None:
+    box = BBox(west=10.0, south=45.0, east=10.2, north=45.1)
+    features = [
+        _point(10.0, 45.05, name="West edge", place="city"),
+        _point(10.2, 45.05, name="East edge", place="city"),  # belongs to the neighbour to the east
+        _point(10.1, 45.1, name="North edge", place="city"),  # belongs to the neighbour to the north
+        {
+            "type": "Feature",
+            "properties": {"name": "Empty", "place": "city"},
+            "geometry": {"type": "Point", "coordinates": []},
+        },
+    ]
+    kept, _, dropped = labels.rank_features(features, box, 11)
+    assert [f["properties"]["name"] for f in kept] == ["West edge"]
+    assert dropped["outside"] == 2 and dropped["not_a_point"] == 1
+
+
 def test_rank_features_refuses_an_unrankable_file() -> None:
     with pytest.raises(AtlasError, match="SCALERANK"):
         labels.rank_features([_point(10.1, 45.05, name="X", population=3)], TEST_BBOX, 11)
@@ -119,6 +136,10 @@ def test_build_labels_input_errors(ne_places: Path, tmp_path: Path) -> None:
         labels.build_labels(tmp_path / "nope.geojson", TEST_BBOX, 6, tmp_path / "labels.geojson")
     with pytest.raises(AtlasError, match="must end in .geojson"):
         labels.build_labels(ne_places, TEST_BBOX, 6, tmp_path / "labels.json")
+    with pytest.raises(AtlasError, match="over job.json"):
+        labels.build_labels(ne_places, TEST_BBOX, 6, tmp_path / "job.geojson")
+    with pytest.raises(AtlasError, match="places file itself"):
+        labels.build_labels(ne_places, TEST_BBOX, 6, ne_places.with_suffix(".geojson"))
 
 
 @requires_gdal
@@ -133,6 +154,13 @@ def test_label_job_records_and_serves(
     assert record.source.sha256 == sha256_file(ne_places)
     assert stored.grid == sidecar.grid and stored.controls == sidecar.controls
     assert JobStore(job_dir.parent).list()[0].has_labels
+
+    labelled = [c for c in stored.commands if "-spat" in c.argv]
+    assert len(labelled) == 1 and labelled[0].tool == "ogr2ogr"  # the ogr2ogr is recorded in job.json too
+    labels.label_job(job_dir, ne_places, zoom=6)  # a re-run replaces it, it does not stack
+    assert len([c for c in load_sidecar(job_dir).commands if "-spat" in c.argv]) == 1
+    record = load_sidecar(job_dir).labels
+    assert record is not None
 
     # a variant keeps the overlay: it is about the grid, not the bake
     assert copy_job(job_dir, tmp_path / "variant").labels == record
@@ -183,3 +211,18 @@ def test_server_labels_404_without_a_record(tmp_path: Path) -> None:
     assert client.get("/jobs/seeded/labels").status_code == 404
     assert client.get("/jobs/nope/labels").status_code == 404
     assert client.get("/jobs/seeded").json()["sidecar"]["labels"] is None
+
+
+@requires_gdal
+def test_controls_rerun_on_the_same_grid_keeps_labels(dem: Path, ne_places: Path, tmp_path: Path) -> None:
+    from argus_atlas.controls import build_controls
+    from tests.conftest import TEST_LONG_SIDE
+
+    job_dir = tmp_path / "rerun"
+    build_controls(dem, TEST_BBOX, job_dir, long_side=TEST_LONG_SIDE)
+    record = labels.label_job(job_dir, ne_places, zoom=6)
+    again = build_controls(dem, TEST_BBOX, job_dir, long_side=TEST_LONG_SIDE)  # a re-bake's controls step
+    assert again.labels == record and any("-spat" in c.argv for c in again.commands)
+
+    moved = BBox(west=TEST_BBOX.west, south=TEST_BBOX.south, east=TEST_BBOX.east - 0.01, north=TEST_BBOX.north)
+    assert build_controls(dem, moved, job_dir, long_side=TEST_LONG_SIDE).labels is None  # another grid drops them

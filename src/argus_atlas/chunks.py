@@ -519,7 +519,7 @@ def crop_chunk(job_dir: Path, sidecar: JobSidecar) -> tuple[FileRef, GdalCommand
     return FileRef(path=dst.name, sha256=sha256_file(dst)), command
 
 
-def _published(job_dir: Path) -> JobSidecar | None:
+def published_chunk(job_dir: Path) -> JobSidecar | None:
     """The job's sidecar if it holds a gated crop still on disk (what neighbours and the archive use), else None."""
     try:
         sidecar = load_sidecar(job_dir)
@@ -571,7 +571,7 @@ def run_chunk(
     if not controls_only and (backend is None or models_root is None):
         raise AtlasError("baking a chunk needs a backend and a models root")
     job_id = out_dir.name
-    previous = _published(out_dir)
+    previous = published_chunk(out_dir)
 
     def emit(kind: str, message: str) -> None:
         if progress is not None:

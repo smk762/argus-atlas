@@ -79,6 +79,21 @@ To grow a map piece by piece, bake it one XYZ tile at a time. `argus-atlas chunk
 
 `--controls-only` stops after the seam controls and needs no GPU.
 
+### A block of chunks
+
+`argus-atlas chunks` bakes many chunks at once and handles the ordering for you:
+
+```bash
+argus-atlas chunks --tile 10/1009/641 --rings 3 --recipe antique --out maps/antique \
+  --sea-level 0 --allow-missing --land land.gpkg --labels --plan   # drop --plan to bake
+```
+
+- **One fetch for the block.** The lon/lat box covering every chunk's canvas, margins included, is fetched once: the DEM with `dem --cover`, and the OSM control layers (`--osm-layers`, by default `water,rivers,roads,forest,urban`) at the chunks' native zoom. With `--labels` the fetch includes `places`, and every chunk is labelled afterwards. Both go to `--inputs` (by default `<out>/.block`) and are reused while their manifests match. Point a second recipe's run at the same `--inputs` and nothing is fetched twice. `--dem` uses your own DEM instead.
+- **Seam order.** Chunks are baked north to south, then west to east, so each one finds its west and north neighbours already baked.
+- **Sea skipping.** With `--land`, chunks whose own tile has no land under the polygon are skipped. `--land` is only a filter here; to burn it as a control too, pass `--layer land=<file>`.
+- **Resume.** A chunk that already has this recipe's gated crop and archive, at the same size and margin, is skipped. The first failure stops the run, because later chunks would seam against a gap. Re-run the same command to continue.
+- `--plan` prints the order, the sea chunks and the finished chunks without fetching or baking. `--bbox … --zoom z` picks the chunks by area instead of `--tile`/`--rings`.
+
 ## Place names
 
 The prompts forbid text, because diffusion paints illegible lettering and breaks tile seams, so the bake has no names. `argus-atlas labels` adds them as a vector overlay the viewer draws on top, in a real font. Names never reach the model, `fantasy.tif` or the PMTiles.

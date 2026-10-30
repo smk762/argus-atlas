@@ -6,6 +6,8 @@ each of them, and lets ``gdalwarp`` read just the needed windows of the COGs
 one Float32 GeoTIFF that ``controls --dem`` accepts. The output stays in the
 tiles' own EPSG:4326 grid: the window is snapped *inward* to their pixel
 lattice, so its bounds sit inside the requested bbox and no pixel is resampled.
+With *cover* it is snapped *outward* instead, so the output contains the whole
+bbox (still on the lattice): what a chunk canvas needs right at its edge.
 
 ``<out>.json`` beside the GeoTIFF records the source, the tile keys, the
 requested and written bounds, the output SHA256 and the gdalwarp argv;
@@ -41,6 +43,7 @@ ATTRIBUTION = (
     "provided under COPERNICUS by the European Union and ESA; all rights reserved."
 )
 # 16 tiles of 3600x3600 Float32 is ~800 MB before the clip: past that, the AOI is not a canvas atlas can paint.
+# A block of chunks can need more (a 9x9 block at z10 near 41°S touches 20): callers raise it with max_tiles.
 MAX_TILES = 16
 # Copernicus omits tiles that are all ocean and puts the sea at 0 m, so a missing tile allowed in is filled with 0.
 SEA_LEVEL = 0.0
@@ -105,34 +108,88 @@ def snap_inward(bbox: BBox, origin: tuple[float, float], res: tuple[float, float
     return xmin, ymin, xmax, ymax
 
 
+def snap_outward(
+    bbox: BBox, origin: tuple[float, float], res: tuple[float, float]
+) -> tuple[float, float, float, float]:
+    """``(xmin, ymin, xmax, ymax)``: the bbox grown to whole pixels of the lattice at *origin* (x, top y)."""
+    (ox, oy), (rx, ry) = origin, res
+    xmin = ox + math.floor((bbox.west - ox) / rx + _SNAP_EPS) * rx
+    xmax = ox + math.ceil((bbox.east - ox) / rx - _SNAP_EPS) * rx
+    ymax = oy - math.floor((oy - bbox.north) / ry + _SNAP_EPS) * ry
+    ymin = oy - math.ceil((oy - bbox.south) / ry - _SNAP_EPS) * ry
+    return xmin, ymin, xmax, ymax
+
+
 def _lattice(location: str) -> tuple[tuple[float, float], tuple[float, float]]:
     gt = gdal_ops.gdalinfo_json(location)["geoTransform"]  # type: ignore[arg-type]  # a /vsicurl/ path is a str
     return (gt[0], gt[3]), (gt[1], -gt[5])
 
 
-def fetch_dem(bbox: BBox, out: Path, *, source: str = DEFAULT_DEM_SOURCE, allow_missing: bool = False) -> dict:
-    """Clip the GLO-30 tiles under *bbox* into *out*. Returns the manifest written to ``<out>.json``.
+def _check_count(bbox: BBox, keys: list[str], max_tiles: int) -> None:
+    if len(keys) > max_tiles:
+        raise AtlasError(
+            f"bbox {bbox.as_text()} touches {len(keys)} DEM tiles; the cap is {max_tiles} (raise it with --max-tiles)"
+        )
 
-    A tile the source lacks is an error that names it, unless *allow_missing*, which fills
-    it with sea level (Copernicus leaves out all-ocean tiles) as long as one tile exists.
+
+def _check_present(
+    source: str, keys: list[str], allow_missing: bool, *, known: frozenset[str] = frozenset()
+) -> tuple[list[str], list[str]]:
+    """``(present, missing)`` keys, or AtlasError naming the missing ones when they may not be filled.
+
+    *known* are keys already found present, so they are not asked about again.
     """
-    if out.suffix.lower() not in (".tif", ".tiff"):
-        raise AtlasError(f"the DEM is written as GeoTIFF: {out} must end in .tif")
-    keys = tiles_for(bbox)
-    if len(keys) > MAX_TILES:
-        raise AtlasError(f"bbox {bbox.as_text()} touches {len(keys)} DEM tiles; the cap is {MAX_TILES}")
-    gdal_ops.require_gdal()
-    logger.info("dem.tiles", source=source, tiles=keys)
-    present = [k for k in keys if tile_exists(source, k)]
+    present = [k for k in keys if k in known or tile_exists(source, k)]
     missing = [k for k in keys if k not in present]
     if missing and (not allow_missing or not present):
         where = f"under {source}" if not _is_url(source) else f"at {source}"
         hint = "" if allow_missing or not present else " (all-ocean tiles are absent by design: --allow-missing)"
         raise AtlasError(f"no DEM tile {', '.join(missing)} {where}{hint}")
-    locations = [tile_location(source, k) for k in present]
+    return present, missing
+
+
+def fetch_dem(
+    bbox: BBox,
+    out: Path,
+    *,
+    source: str = DEFAULT_DEM_SOURCE,
+    allow_missing: bool = False,
+    cover: bool = False,
+    max_tiles: int = MAX_TILES,
+) -> dict:
+    """Clip the GLO-30 tiles under *bbox* into *out*. Returns the manifest written to ``<out>.json``.
+
+    A tile the source lacks is an error that names it, unless *allow_missing*, which fills
+    it with sea level (Copernicus leaves out all-ocean tiles) as long as one tile exists.
+    With *cover* the window snaps outward, so the output contains all of *bbox*; that can
+    reach half a pixel into a tile the bbox itself does not touch, which is then fetched too.
+    """
+    if out.suffix.lower() not in (".tif", ".tiff"):
+        raise AtlasError(f"the DEM is written as GeoTIFF: {out} must end in .tif")
+    keys = tiles_for(bbox)
+    _check_count(bbox, keys, max_tiles)
+    gdal_ops.require_gdal()
+    logger.info("dem.tiles", source=source, tiles=keys)
+    present, missing = _check_present(source, keys, allow_missing)
     # The finest lattice wins; GLO-30 tiles in one latitude band share it, so nothing is resampled.
-    origin, res = min((_lattice(loc) for loc in locations), key=lambda lattice: lattice[1][0] * lattice[1][1])
-    bounds = snap_inward(bbox, origin, res)
+    origin, res = min(
+        (_lattice(tile_location(source, k)) for k in present), key=lambda lattice: lattice[1][0] * lattice[1][1]
+    )
+    if cover:
+        bounds = snap_outward(bbox, origin, res)
+        xmin, ymin, xmax, ymax = bounds  # clamped: half a pixel past the antimeridian is not a tile
+        grown = tiles_for(
+            BBox(west=max(xmin, -180.0), south=max(ymin, -90.0), east=min(xmax, 180.0), north=min(ymax, 90.0))
+        )
+        extra = [k for k in grown if k not in keys]
+        if extra:
+            _check_count(bbox, grown, max_tiles)
+            logger.info("dem.cover_tiles", tiles=extra)
+            keys = grown
+            present, missing = _check_present(source, grown, allow_missing, known=frozenset(present))
+    else:
+        bounds = snap_inward(bbox, origin, res)
+    locations = [tile_location(source, k) for k in present]
     out.parent.mkdir(parents=True, exist_ok=True)
     command = gdal_ops.run(gdal_ops.dem_clip_argv(locations, out, bounds, res, fill=SEA_LEVEL))
     manifest = {
@@ -141,6 +198,7 @@ def fetch_dem(bbox: BBox, out: Path, *, source: str = DEFAULT_DEM_SOURCE, allow_
         "attribution": ATTRIBUTION,
         "fetched_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "bbox": bbox.as_text(),
+        "snap": "outward" if cover else "inward",
         "bounds": [round(v, 9) for v in bounds],
         "resolution": list(res),
         "tiles": present,

@@ -268,6 +268,20 @@ def osm_layer_argv(osm: Path, dst: Path, osm_layer: str, where: str) -> list[str
     return ["ogr2ogr", "-f", "GeoJSON", "-where", where, str(dst), str(osm), osm_layer]
 
 
+def places_argv(
+    src: Path, dst: Path, bbox: tuple[float, float, float, float], *, layer: str | None = None, where: str | None = None
+) -> list[str]:
+    """Copy the features of a places file inside a lon/lat *bbox* (west, south, east, north) to
+    EPSG:4326 GeoJSON. ``-spat`` filters, it does not clip, so a point comes through whole or not at all."""
+    argv = ["ogr2ogr", "-f", "GeoJSON", "-t_srs", "EPSG:4326", "-spat", *map(repr, bbox), "-spat_srs", "EPSG:4326"]
+    if where:
+        argv += ["-where", where]
+    argv += [str(dst), str(src)]
+    if layer:
+        argv.append(layer)
+    return argv
+
+
 # Letters gdal_calc accepts for its inputs: A is the hillshade, the rest are masks in paint order.
 _CALC_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 

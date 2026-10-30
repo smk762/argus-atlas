@@ -18,8 +18,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Sidecar schema version. Bump the minor for additive fields, the major for a
-# breaking change to what a reader must understand. 0.2 added chunk, recipe and timings.
-ATLAS_VERSION = "0.2"
+# breaking change to what a reader must understand. 0.2 added chunk, recipe and timings; 0.3 labels.
+ATLAS_VERSION = "0.3"
 
 CRS = "EPSG:3857"
 EPSG_CODE = 3857
@@ -358,6 +358,22 @@ class ChunkRecord(BaseModel):
         return f"{self.z}/{self.x}/{self.y}"
 
 
+class LabelsRecord(BaseModel):
+    """Place names for the drape: a GeoJSON overlay the viewer draws over the raster.
+
+    Names never enter the model, the GeoTIFF or the PMTiles. ``file`` holds the points inside
+    the canvas (a chunk's tile) whose rank survives at ``zoom``; ``cutoff`` says which did.
+    """
+
+    source: FileRef  # the places file, absolute path + digest
+    scheme: Literal["naturalearth", "osm"] | None  # None: nothing inside the canvas to tell by
+    zoom: int = Field(ge=0)
+    cutoff: str
+    count: int = Field(ge=0)
+    file: FileRef  # labels.geojson, relative to the job dir
+    completed_at: str
+
+
 JobStatus = Literal["controls", "baked", "unaligned", "tiled"]
 
 
@@ -382,6 +398,7 @@ class JobSidecar(BaseModel):
     tiles: TilesRecord | None = None
     chunk: ChunkRecord | None = None
     recipe: RecipeRecord | None = None
+    labels: LabelsRecord | None = None
     # Wall-clock seconds per stage (controls, seams, verify, generate, georeference, crop, tiles).
     timings: dict[str, float] = Field(default_factory=dict)
 
@@ -418,6 +435,7 @@ class JobDigest(BaseModel):
     layers: list[str] = Field(default_factory=list)
     has_composite: bool = False
     has_archive: bool
+    has_labels: bool = False
     chunk: str | None = None  # "z/x/y" for a chunk job
     recipe: str | None = None
 

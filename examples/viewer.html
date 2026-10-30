@@ -15,6 +15,11 @@
       HTTP range requests, and can show the hillshade control for comparison;
     * from a local fantasy.pmtiles via the file picker (no server at all).
 
+  Place names (`argus-atlas labels`) are a GeoJSON layer drawn on top in the
+  basemap's own font, never painted by the model: loaded from
+  GET /jobs/{id}/labels when the job has them, or from a local labels.geojson.
+  They stay put while the opacity slider fades the raster.
+
   Basemap: OpenFreeMap "liberty" (OpenMapTiles data, no key). Libraries pinned
   from public CDNs; everything else is inline.
 -->
@@ -78,6 +83,8 @@
     <summary>…or open a local fantasy.pmtiles</summary>
     <input id="file" type="file" accept=".pmtiles" style="margin-top:6px; width:100%">
     <p class="hint">No server needed; the hillshade comparison is only available via the server.</p>
+    <label for="labels-file">…and a local labels.geojson</label>
+    <input id="labels-file" type="file" accept=".geojson,.json" style="width:100%">
   </details>
 
   <label for="opacity">Overlay opacity <span id="opval">80%</span></label>
@@ -86,6 +93,8 @@
   <div class="toggles">
     <label><input id="show-fantasy" type="checkbox" checked disabled> painted map</label>
     <label><input id="show-hillshade" type="checkbox" disabled> hillshade control</label>
+    <label><input id="show-labels" type="checkbox" checked disabled> place names</label>
+    <label><input id="show-basemap-labels" type="checkbox" checked> basemap labels</label>
   </div>
   <p class="hint">Hold <kbd>space</kbd> to peek at the basemap.</p>
 
@@ -130,6 +139,7 @@
   map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
 
   const FANTASY = "atlas-fantasy", HILLSHADE = "atlas-hillshade";
+  const LABELS = "atlas-labels", LABEL_DOTS = "atlas-labels-dots";
   let ready = false, peeking = false;
   map.on("load", () => { ready = true; });
 
@@ -196,6 +206,74 @@
     applyOpacity();
   }
 
+  // ---- Place names: a vector layer above everything, in a font the model never drew ----
+  const INK = "#2b1d0e", PARCHMENT = "#f6f2e9";
+
+  function applyLabels() {
+    if (!ready) return;
+    const vis = $("show-labels").checked ? "visible" : "none";
+    for (const id of [LABELS, LABEL_DOTS]) if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", vis);
+    const base = $("show-basemap-labels").checked ? "visible" : "none";
+    for (const l of map.getStyle().layers) {
+      if (l.type === "symbol" && !l.id.startsWith("atlas-")) map.setLayoutProperty(l.id, "visibility", base);
+    }
+  }
+
+  function clearLabels() {
+    if (map.getLayer(LABELS)) map.removeLayer(LABELS);
+    removeLayer(LABEL_DOTS);
+    $("show-labels").disabled = true;
+  }
+
+  // data: a GeoJSON object or a URL to one. Features carry name, rank (lower = more important) and kind.
+  async function showLabels(data) {
+    if (!ready) await new Promise((r) => map.once("load", r));
+    clearLabels();
+    map.addSource(LABEL_DOTS, { type: "geojson", data, attribution: "place names: argus-atlas labels" });
+    map.addLayer({
+      id: LABEL_DOTS, type: "circle", source: LABEL_DOTS,
+      paint: { "circle-radius": 2.5, "circle-color": INK, "circle-stroke-color": PARCHMENT, "circle-stroke-width": 1 },
+    });
+    map.addLayer({
+      id: LABELS, type: "symbol", source: LABEL_DOTS,
+      layout: {
+        "text-field": ["get", "name"],
+        "text-font": ["Noto Sans Italic"],
+        "text-size": ["max", 11, ["-", 16, ["get", "rank"]]],
+        "symbol-sort-key": ["get", "rank"],
+        "text-variable-anchor": ["top", "bottom", "left", "right"],
+        "text-radial-offset": 0.5,
+        "text-letter-spacing": 0.04,
+      },
+      paint: { "text-color": INK, "text-halo-color": PARCHMENT, "text-halo-width": 1.6 },
+    });
+    $("show-labels").disabled = false;
+    applyLabels();
+  }
+
+  function featuresBounds(fc) {
+    const xs = [], ys = [];
+    for (const f of fc.features || []) {
+      if (f.geometry && f.geometry.type === "Point") { xs.push(f.geometry.coordinates[0]); ys.push(f.geometry.coordinates[1]); }
+    }
+    return xs.length ? [[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)]] : null;
+  }
+
+  async function loadLabelsFile(file) {
+    if (!file) return;
+    try {
+      const fc = JSON.parse(await file.text());
+      await showLabels(fc);
+      const n = (fc.features || []).length;
+      // Nothing draped yet: frame the names themselves.
+      const bounds = featuresBounds(fc);
+      if (!map.getLayer(FANTASY) && bounds) map.fitBounds(bounds, { padding: 80, maxZoom: 13, duration: 600 });
+      status($("status").textContent.split("\n")[0] + `\n${file.name}: ${n} place name(s)`);
+    } catch (err) {
+      status(`Cannot read ${file.name}: ${err.message}`, true);
+    }
+  }
+
   const serverBase = () => $("server").value.trim().replace(/\/+$/, "");
 
   async function connect() {
@@ -237,9 +315,13 @@
       const { sidecar } = await res.json();
       await showArchive(`${base}/jobs/${encodeURIComponent(jobId)}/archive`, jobId);
       showHillshade(base, jobId, sidecar.grid);
+      if (sidecar.labels) await showLabels(`${base}/jobs/${encodeURIComponent(jobId)}/labels`);
+      else clearLabels();
       const b = sidecar.bake;
       if (b) status($("status").textContent + `\n${b.checkpoint.name.split("/").pop()}` +
         (b.lora ? ` + ${b.lora.name.split("/").pop()}` : "") + `, seed ${b.params.seed}, aligned=${b.aligned}`);
+      const l = sidecar.labels;
+      if (l) status($("status").textContent + `\n${l.count} place name(s), ${l.cutoff}`);
     } catch (err) {
       status(`Load failed: ${err.message}`, true);
     }
@@ -251,6 +333,7 @@
     try {
       removeLayer(HILLSHADE);
       $("show-hillshade").disabled = true; $("show-hillshade").checked = false;
+      clearLabels(); $("labels-file").value = "";  // a server job's names do not belong on another raster
       await showArchive(new FileSource(file), file.name);
     } catch (err) {
       status(`Cannot open ${file.name}: ${err.message}`, true);
@@ -261,6 +344,9 @@
   $("load").addEventListener("click", loadJob);
   $("job").addEventListener("change", loadJob);
   $("file").addEventListener("change", (e) => loadFile(e.target.files[0]));
+  $("labels-file").addEventListener("change", (e) => loadLabelsFile(e.target.files[0]));
+  $("show-labels").addEventListener("change", applyLabels);
+  $("show-basemap-labels").addEventListener("change", applyLabels);
   $("opacity").addEventListener("input", applyOpacity);
   $("show-fantasy").addEventListener("change", applyOpacity);
   $("show-hillshade").addEventListener("change", applyOpacity);

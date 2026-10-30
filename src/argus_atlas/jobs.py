@@ -73,6 +73,7 @@ def digest(sidecar: JobSidecar) -> JobDigest:
         layers=sidecar.layers,
         has_composite=COMPOSITE_KIND in sidecar.controls,
         has_archive=sidecar.tiles is not None,
+        has_labels=sidecar.labels is not None,
         chunk=sidecar.chunk.tile if sidecar.chunk else None,
         recipe=sidecar.recipe.recipe.name if sidecar.recipe else None,
     )
@@ -150,4 +151,11 @@ class JobStore:
         if sidecar.tiles is None:
             return None
         path = self.dir(job_id) / Path(sidecar.tiles.archive.path).name
+        return path if path.is_file() else None
+
+    def labels_path(self, job_id: str) -> Path | None:
+        sidecar = self.load(job_id)
+        if sidecar.labels is None:
+            return None
+        path = self.dir(job_id) / Path(sidecar.labels.file.path).name
         return path if path.is_file() else None

@@ -11,6 +11,7 @@ Routes:
     GET  /jobs/{id}                    {sidecar, status}
     GET  /jobs/{id}/preview/{kind}     PNG; kind is hillshade, slope, land or fantasy (ids only, no paths)
     GET  /jobs/{id}/archive            the PMTiles bytes
+    GET  /jobs/{id}/labels             the place-name GeoJSON `argus-atlas labels --job` wrote (built by the CLI only)
 
 Paths in request bodies (the DEM, a land polygon) are resolved under
 ``$ATLAS_DEM_DIR`` and refused if they escape it; jobs are addressed by id and
@@ -478,5 +479,16 @@ def create_app(
         if path is None:
             raise HTTPException(status_code=404, detail=f"job {job_id!r} has no PMTiles archive yet")
         return FileResponse(path, media_type="application/vnd.pmtiles", filename=path.name)
+
+    @app.get("/jobs/{job_id}/labels")
+    async def labels(job_id: str) -> FileResponse:
+        """Place names for the viewer to draw over the raster. No route builds them: that is the CLI."""
+        sidecar = _load(job_id)
+        path = store.labels_path(sidecar.job_id)
+        if path is None:
+            raise HTTPException(
+                status_code=404, detail=f"job {job_id!r} has no labels (run `argus-atlas labels --job`)"
+            )
+        return FileResponse(path, media_type="application/geo+json")
 
     return app

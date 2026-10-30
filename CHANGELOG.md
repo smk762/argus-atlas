@@ -11,6 +11,7 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 - `osm --layers places`: named `place=*` nodes, scale-aware like the other layers, as a source for `labels`.
 - `examples/viewer.html` draws a job's labels (or a local `labels.geojson`) above the raster in the basemap's font, with toggles for them and for the basemap's own labels. `examples/sample_places.geojson` labels the sample DEM.
 - `dem`: fetch a Copernicus GLO-30 DEM for a bbox (#15). It names the 1x1° tiles the bbox touches, reads only the needed windows of the COGs on the public AWS bucket with `gdalwarp` over `/vsicurl/`, and writes one Float32 GeoTIFF on the tiles' own lattice, snapped inside the bbox, that `controls --dem` accepts. A tile the source lacks is an error that names it; `--allow-missing` fills absent (all-ocean) tiles with 0 m. `<out>.json` records the source, tile keys, requested and written bounds, output SHA256 and the gdalwarp argv, and the command prints the Copernicus attribution. `--source` / `ATLAS_DEM_SOURCE` selects a mirror or a local directory. CLI only: the server has no DEM route.
+- `opencaching.allow_reuse`: the Geocaching Australia licence gate (CC BY-NC-SA 2.5). Geocaching.com is rejected. A commercial reuse, or a paid app, is refused before any listings are fetched.
 
 ## [0.2.0a1] - 2026-10-25
 
@@ -67,7 +68,6 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 - Workflow templates may use any control as a `$<name>` placeholder; the packaged `comfyui_sdxl_img2img_composite_nolora.json` uses `$composite` as the img2img init and `$hillshade` for the ControlNet.
 - ComfyUI backend fails fast when a queued prompt disappears from both `/queue` and `/history` (ComfyUI restarted mid-bake) instead of waiting out the bake timeout.
 - `docs/first-bake.md`: the morpheus runbook, amended with the first real bake (Lake Garda, Copernicus GLO-30), LoRA, prompt, checkpoint and denoise sweeps, and contact sheets under `docs/img/`.
-- `opencaching.allow_reuse`: the Geocaching Australia licence gate (CC BY-NC-SA 2.5). Geocaching.com is rejected. A commercial reuse, or a paid app, is refused before any listings are fetched.
 
 ### Fixed
 

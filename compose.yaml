@@ -1,0 +1,77 @@
+# argus-atlas in Docker: the CLI and the API from one image, the host-specific parts in .env.
+#
+#   cp .env.example .env                                  # then edit paths, UID/GID, flags
+#   docker compose run --rm atlas doctor                  # any CLI command: `atlas` is argus-atlas
+#   docker compose up -d serve                            # the API on 127.0.0.1:8105
+#   docker compose --profile test run --rm test           # the suite against real GDAL
+#
+# ComfyUI is not managed here: it runs on the GPU host and is reached by URL. argus-studio
+# deploys atlas through its own compose (`--profile atlas`); this file is for operators and dev.
+# Paths given to the CLI are container paths: /data/dem, /data/recipes, /data/models, /data/out/atlas.
+name: argus-atlas
+
+x-atlas: &atlas
+  image: ${ATLAS_IMAGE:-argus-atlas:local}
+  build:
+    context: .
+    args:
+      EXTRAS: server,cli,tiles
+  # Files written to the mounts belong to you, not root. Bash does not export UID, so set it in .env.
+  user: "${UID:-1000}:${GID:-1000}"
+  extra_hosts:
+    - host.docker.internal:host-gateway
+  environment:
+    HOME: /tmp
+    ATLAS_BACKEND: ${ATLAS_BACKEND:-comfyui}
+    COMFYUI_BASE_URL: ${COMFYUI_BASE_URL:-http://host.docker.internal:8188}
+    ATLAS_WORKFLOW: ${ATLAS_WORKFLOW:-}  # a container path, e.g. under /data/models
+    ATLAS_ALLOW_BAKE: ${ATLAS_ALLOW_BAKE:-}
+    ATLAS_ALLOW_OSM: ${ATLAS_ALLOW_OSM:-}
+    ATLAS_CORS_ORIGINS: ${ATLAS_CORS_ORIGINS:-http://localhost:3000}
+    ATLAS_DEM_SOURCE: ${ATLAS_DEM_SOURCE:-}
+    ATLAS_OVERPASS_URL: ${ATLAS_OVERPASS_URL:-}
+    ATLAS_RECIPES_DIR: /data/recipes
+  volumes:
+    - ${ATLAS_DEM_HOST:-./data/dem}:/data/dem
+    - ${ATLAS_RECIPES_HOST:-./examples/recipes}:/data/recipes:ro
+    - ${ATLAS_MODELS_HOST:-./data/models}:/data/models:ro
+    - ${ATLAS_JOBS_HOST:-./data/jobs}:/data/out/atlas
+
+services:
+  atlas:
+    <<: *atlas
+    profiles: [cli]  # one-shot: `docker compose run --rm atlas <command>`; never started by `up`
+    entrypoint: [argus-atlas]
+    command: [--help]
+
+  serve:
+    <<: *atlas
+    command: [argus-atlas, serve, --port, "8105", --cors]
+    ports:
+      - ${ATLAS_BIND:-127.0.0.1}:${ATLAS_PORT:-8105}:8105
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8105/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+      start_interval: 2s
+
+  test:
+    image: argus-atlas:test
+    build:
+      context: .
+      args:
+        EXTRAS: server,cli,tiles,dev
+    profiles: [test]
+    user: "${UID:-1000}:${GID:-1000}"
+    working_dir: /src
+    environment:
+      HOME: /tmp
+      PYTHONPATH: /src/src  # the checkout, not the copy baked into the image
+      PYTHONDONTWRITEBYTECODE: "1"  # keep the checkout free of container-written caches
+      ATLAS_TEST_REQUIRE_GDAL: "1"
+    volumes:
+      - .:/src
+    command: [python, -m, pytest, -q, -p, no:cacheprovider]

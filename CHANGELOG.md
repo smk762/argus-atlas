@@ -10,7 +10,12 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 - `GET /jobs/{id}/labels` serves a job's labels; `JobDigest.has_labels`. There is no route that builds them.
 - `osm --layers places`: named `place=*` nodes, scale-aware like the other layers, as a source for `labels`.
 - `examples/viewer.html` draws a job's labels (or a local `labels.geojson`) above the raster in the basemap's font, with toggles for them and for the basemap's own labels. `examples/sample_places.geojson` labels the sample DEM.
+- `compose.yaml`: run the CLI (`docker compose run --rm atlas <command>`), the API (`up -d serve`, bound to 127.0.0.1 with a healthcheck) and the test suite (`--profile test`) from the image, as your uid, with host paths, flags and the ComfyUI URL from `.env`. `.env.example` gains the compose host settings (`UID`/`GID`, `ATLAS_*_HOST` mounts, `ATLAS_BIND`, `ATLAS_IMAGE`) plus `ATLAS_ALLOW_OSM`, `ATLAS_DEM_SOURCE` and `ATLAS_OVERPASS_URL`. ComfyUI is not managed.
 - `dem`: fetch a Copernicus GLO-30 DEM for a bbox (#15). It names the 1x1° tiles the bbox touches, reads only the needed windows of the COGs on the public AWS bucket with `gdalwarp` over `/vsicurl/`, and writes one Float32 GeoTIFF on the tiles' own lattice, snapped inside the bbox, that `controls --dem` accepts. A tile the source lacks is an error that names it; `--allow-missing` fills absent (all-ocean) tiles with 0 m. `<out>.json` records the source, tile keys, requested and written bounds, output SHA256 and the gdalwarp argv, and the command prints the Copernicus attribution. `--source` / `ATLAS_DEM_SOURCE` selects a mirror or a local directory. CLI only: the server has no DEM route.
+
+### Fixed
+
+- The Docker build context leaves out `.env`, `data/`, `jobs/` and `output/`, so local DEMs and exported bakes are no longer sent to the builder or copied into the image.
 
 ## [0.2.0a1] - 2026-10-25
 

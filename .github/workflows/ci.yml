@@ -48,8 +48,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      - run: uv venv --python ${{ matrix.python-version }}
-      - run: uv pip install -e ".[dev,server,cli,tiles]"
+      - run: uv sync --locked --all-extras --python ${{ matrix.python-version }}
       - run: uv run --no-sync pytest --tb=short -q
 
   build:

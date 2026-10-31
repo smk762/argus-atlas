@@ -18,6 +18,10 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 - `mosaic`: combine a style's chunk archives into one XYZ directory or PMTiles archive (#17). Chunk tiles are copied byte for byte, and a tile two archives disagree on is an error. Overviews down to `--overview-min` (default 5) come from `gdal2tiles` over a `gdalbuildvrt -addalpha` mosaic of the chunk crops. The chunks' `labels.geojson` are merged without duplicates. `mosaic.json` records each source chunk's job id and archive SHA256. MBTiles output stays with #3.
 - Release: a `v*` tag now ends with a GitHub Release (#13), created after the PyPI publish succeeds, with this version's CHANGELOG section as notes and the wheel and sdist attached. Tags with `a<n>`, `b<n>`, `rc` or `-` are pre-releases. Re-running the workflow edits the existing Release instead of failing.
 
+### Changed
+
+- `uv.lock` is committed. `make install`, CI and the image install with `uv sync --locked` instead of `uv pip install`, so they all get the same resolved versions, and a `pyproject.toml` change without `make lock` fails. The release smoke test still installs the built wheel.
+
 ### Fixed
 
 - The Docker build context leaves out `.env`, `data/`, `jobs/` and `output/`, so local DEMs and exported bakes are no longer sent to the builder or copied into the image.

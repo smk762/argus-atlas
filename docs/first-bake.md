@@ -66,7 +66,7 @@ sed -i 's|diffusers_xl_depth_full.safetensors|controlnet-union-sdxl/diffusion_py
 
 ```bash
 git clone https://github.com/smk762/argus-atlas && cd argus-atlas
-make install            # uv venv + [dev,server,cli,tiles]; needs gdal-bin + python3-gdal on the host
+make install            # uv sync --locked --all-extras; needs gdal-bin + python3-gdal on the host
 uv run argus-atlas doctor   # or run everything from the image if GDAL isn't installed there (see below)
 
 # 1. Controls (GDAL only)

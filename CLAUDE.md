@@ -45,7 +45,7 @@ v0 bakes **one** Web Mercator canvas (long side <= 1536 px, both sides multiples
 ## Commands
 
 ```bash
-make install   # uv venv + editable install with [dev,server,cli,tiles]
+make install   # uv sync --locked --all-extras (editable); `make lock` after changing dependencies
 make test      # pytest; GDAL-backed tests SKIP when gdalinfo is absent (ATLAS_TEST_REQUIRE_GDAL=1 makes them fail instead — CI sets it)
 make lint      # ruff 0.15.16 check + format --check
 make format
@@ -69,6 +69,6 @@ docker compose --profile test run --rm test
 - **Record, don't assume.** Every GDAL command goes into `sidecar.commands` as an argv array; every model is pinned by SHA256 via `hash_model`; the control PNGs are re-hashed before a bake (`verify_controls`) so a tampered control can't be painted silently. The bake payload is embedded in `fantasy.png` *before* its digest is taken and before stamping, so metadata never changes pixels and the gate sees the same image.
 - **Placeholders are exact-match strings.** `render_workflow` substitutes only values that *are* a `$name`; ints/floats stay typed. Required: `$checkpoint $positive $negative $seed $steps $cfg $denoise $width $height $hillshade`. `$lora`/`$lora_weight` must both be present iff a LoRA is supplied. Any other `$name` is a control of the job (`$slope`, `$composite`, `$land`, `$<layer>`), uploaded only when used; a `$name` the job lacks is a `BackendError` that names it.
 - **gdal_rasterize never reprojects.** Its `-a_srs` only labels the output, so every vector goes through `reproject_argv` (ogr2ogr `-t_srs EPSG:3857 -clipdst`) first. It also marks 0 as NoData; masks are exported with `-a_nodata none` and the composite is built with `--hideNoData`.
-- **Cross-session note (2026-10-17):** README.md, TODO.md, CHANGELOG.md and examples/ were authored by a second agent session; pyproject.toml carries its PyPI discovery metadata on top of the suite template. Dependencies/extras are owned here.
+- **Cross-session note (2026-10-17):** README.md, TODO.md, CHANGELOG.md and examples/ were authored by a second agent session; pyproject.toml carries its PyPI discovery metadata on top of the suite template. Dependencies/extras are owned here; `uv.lock` is committed and CI, the image and `make install` all sync from it with `--locked`, so a dependency change needs `make lock` in the same commit.
 - Versioning is git-tag-derived (`hatch-vcs`); `_version.py` is generated. `structlog` logging, Pydantic v2, ruff line-length 120. Scaffolded from `argus-pkg-template` — `copier update` pulls tooling changes, but **CI is standalone** (`.github/workflows/ci.yml` apt-installs `gdal-bin python3-gdal`; the shared argus-ci workflow has no system-package hook).
 - Image base is `ghcr.io/osgeo/gdal:ubuntu-small-3.11.4` (Ubuntu 24.04, Python 3.12, `gdal2tiles.py` included), not `python:*-slim`. Weights are mounted, never copied.

@@ -51,12 +51,13 @@ make lint      # ruff 0.15.16 check + format --check
 make format
 ```
 
-No GDAL on the dev box? Run the suite in the image:
+No GDAL on the dev box? Run the suite in the image, against the checkout (mounted, as your uid):
 
 ```bash
-docker build -t argus-atlas:test --build-arg EXTRAS="server,cli,tiles,dev" .
-docker run --rm -e ATLAS_TEST_REQUIRE_GDAL=1 argus-atlas:test pytest -q -p no:cacheprovider
+docker compose --profile test run --rm test
 ```
+
+`compose.yaml` also runs the CLI (`docker compose run --rm atlas <command>`, container paths under `/data`) and the API (`docker compose up -d serve`); host paths, UID/GID and flags come from `.env` (see `.env.example`). It never manages ComfyUI, and argus-studio's compose stays the deployment. Don't `docker run` the image as root against the checkout: it leaves root-owned `__pycache__` files.
 
 ## Conventions & gotchas
 

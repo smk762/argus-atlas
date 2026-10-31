@@ -188,7 +188,15 @@ def controls(
 
 @app.command()
 def dem(
-    bbox: str = Option(..., "--bbox", help="AOI as west,south,east,north in EPSG:4326 degrees"),
+    bbox: str | None = Option(None, "--bbox", help="AOI as west,south,east,north in EPSG:4326 degrees"),
+    tile: str | None = Option(
+        None,
+        "--tile",
+        "-t",
+        help="Instead of --bbox: the canvas of chunk z/x/y (with --size/--margin); implies --cover",
+    ),
+    size: int | None = Option(None, "--size", help="With --tile: the chunk's tile side in px, as for `chunk` (1024)"),
+    margin: int | None = Option(None, "--margin", help="With --tile: the chunk's margin in px, as for `chunk` (128)"),
     out: Path = Option(..., "--out", "-o", help="GeoTIFF to write (provenance in <out>.json beside it)"),
     source: str | None = Option(
         None, "--source", help="GLO-30 bucket URL, mirror or local dir of <key>/<key>.tif (default $ATLAS_DEM_SOURCE)"
@@ -196,20 +204,46 @@ def dem(
     allow_missing: bool = Option(
         False, "--allow-missing", help="Fill tiles the source lacks (all-ocean ones) with 0 m instead of failing"
     ),
+    cover: bool = Option(
+        False, "--cover", help="Snap the window outward so the output contains the whole bbox (default: inside it)"
+    ),
+    max_tiles: int = Option(16, "--max-tiles", min=1, help="Refuse an AOI touching more GLO-30 tiles than this"),
 ) -> None:
     """Clip Copernicus GLO-30 to an AOI into one GeoTIFF for `controls --dem`. Needs the network (or a mirror)."""
     from argus_atlas import gdal_ops
+    from argus_atlas.chunks import DEFAULT_CHUNK_SIZE, DEFAULT_MARGIN, canvas_bbox, parse_tile
     from argus_atlas.dem import ATTRIBUTION, DemSourceError, fetch_dem
 
+    if (bbox is None) == (tile is None):
+        _fail("give exactly one of --bbox or --tile", EXIT_INPUT)
+    if tile is None and (size is not None or margin is not None):
+        _fail("--size and --margin only apply to --tile", EXIT_INPUT)
     try:
-        manifest = fetch_dem(BBox.parse(bbox), out, source=config.dem_source(source), allow_missing=allow_missing)
+        if tile is not None:
+            z, x, y = parse_tile(tile)
+            size = DEFAULT_CHUNK_SIZE if size is None else size
+            margin = DEFAULT_MARGIN if margin is None else margin
+            aoi = canvas_bbox(z, x, y, size=size, margin=margin)
+        else:
+            aoi = BBox.parse(bbox)
+        manifest = fetch_dem(
+            aoi,
+            out,
+            source=config.dem_source(source),
+            allow_missing=allow_missing,
+            cover=cover or tile is not None,
+            max_tiles=max_tiles,
+        )
     except (gdal_ops.GdalError, DemSourceError) as exc:
         _fail(f"dem failed: {exc}", 1)
         return
     except AtlasError as exc:
         _fail(f"dem failed: {exc}", EXIT_INPUT)
         return
-    typer.echo(f"{out}: {manifest['output']['bytes'] / 1e6:.1f} MB from {len(manifest['tiles'])} tile(s)")
+    typer.echo(
+        f"{out}: {manifest['output']['bytes'] / 1e6:.1f} MB from {len(manifest['tiles'])} tile(s), "
+        f"snapped {manifest['snap']} of {manifest['bbox']}"
+    )
     for key in manifest["tiles"]:
         typer.echo(f"  {key}")
     for key in manifest["missing"]:

@@ -22,10 +22,12 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 
 ### Changed
 
+- Releases: feature work lands on `dev`, and a release is a `dev` → `main` PR with `vX.Y.ZrcN` candidates tagged on its head (README → Develop). CI runs on both branches.
 - `uv.lock` is committed. `make install`, CI and the image install with `uv sync --locked` instead of `uv pip install`, so they all get the same resolved versions, and a `pyproject.toml` change without `make lock` fails. The release smoke test still installs the built wheel.
 
 ### Fixed
 
+- Image tags: release tags are PEP 440, which the semver tag type rejects, and `:latest` was hard-coded. The image now gets its exact version tag on every release, `:X.Y` only on finals, and `:latest` only on finals, never on an alpha or a release candidate.
 - The Docker build context leaves out `.env`, `data/`, `jobs/` and `output/`, so local DEMs and exported bakes are no longer sent to the builder or copied into the image.
 
 ## [0.2.0a1] - 2026-10-25

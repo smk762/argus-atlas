@@ -355,7 +355,16 @@ make lint
 docker compose --profile test run --rm test   # the suite against real GDAL, no host install
 ```
 
-Versioning is derived from git tags via `hatch-vcs`; tag `vX.Y.Z` to cut a release. CI is a standalone workflow that apt-installs `gdal-bin` and `python3-gdal` before running the suite, since the tests drive real GDAL on a synthetic DEM. Release publishes to PyPI (OIDC trusted publishing) and GHCR on `v*` tags. This repo was scaffolded from [`argus-pkg-template`](https://github.com/smk762/argus-pkg-template); run `copier update` to pull template changes.
+Versioning is derived from git tags via `hatch-vcs`.
+
+**Branches and releases.** Work lands on `dev` (the default branch) through PRs. A release is a PR from `dev` into `main`:
+
+1. Cut the CHANGELOG on `dev`: rename `[Unreleased]` to `[X.Y.Zrc1] - <date>`, then open the `dev` → `main` PR.
+2. Tag `vX.Y.Zrc1` on the PR's head commit. That publishes a pre-release to PyPI, GHCR (`:X.Y.Zrc1`, never `:latest`) and GitHub Releases, so the exact commit under review can be installed and baked with.
+3. Fixes go to `dev` and get `rc2`, `rc3`, …, each with its own CHANGELOG heading.
+4. Once approved, rename the heading to `[X.Y.Z]`, merge the PR, and tag `vX.Y.Z` on `main`. Only finals move `:latest` and the `:X.Y` image tag.
+
+`main` only changes through a PR with green CI. CI is a standalone workflow that apt-installs `gdal-bin` and `python3-gdal` before running the suite, since the tests drive real GDAL on a synthetic DEM. Release publishes to PyPI (OIDC trusted publishing) and GHCR on `v*` tags. This repo was scaffolded from [`argus-pkg-template`](https://github.com/smk762/argus-pkg-template); run `copier update` to pull template changes.
 
 The launch and onboarding plan lives in [TODO.md](TODO.md). Agents working in this repo should read [CLAUDE.md](CLAUDE.md) first.
 

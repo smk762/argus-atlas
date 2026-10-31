@@ -18,7 +18,7 @@ def test_australian_reuse_carries_the_licence() -> None:
 
 
 def test_commercial_reuse_of_australian_listings_is_refused() -> None:
-    with pytest.raises(AtlasError, match="CC-BY-NC-SA-2.5"):
+    with pytest.raises(AtlasError, match=r"CC-BY-NC-SA-2\.5"):
         allow_reuse("au", commercial=True)
 
 
@@ -28,8 +28,14 @@ def test_paid_app_is_outside_the_australian_api_terms() -> None:
 
 
 def test_geocaching_com_stays_rejected() -> None:
-    with pytest.raises(AtlasError, match="Geocaching.com"):
+    with pytest.raises(AtlasError, match=r"Geocaching\.com"):
         allow_reuse("geocaching.com")
+
+
+def test_installation_codes_are_case_insensitive() -> None:
+    assert allow_reuse(" AU ")["source"] == AU.site
+    with pytest.raises(AtlasError, match=r"Geocaching\.com"):
+        allow_reuse("Geocaching.COM")
 
 
 def test_other_nodes_are_not_licensed_yet() -> None:

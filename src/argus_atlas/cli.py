@@ -496,6 +496,164 @@ def chunk(
 
 
 @app.command()
+def chunks(
+    tile: str | None = Option(None, "--tile", "-t", help="Centre tile z/x/y of the block (with --rings)"),
+    rings: int = Option(0, "--rings", min=0, help="With --tile: rings of chunks around it (1 = 3x3, 3 = 7x7)"),
+    bbox: str | None = Option(None, "--bbox", help="Instead of --tile: every chunk at --zoom touching this box"),
+    zoom: int | None = Option(None, "--zoom", "-z", min=0, help="With --bbox: the chunk zoom"),
+    recipe: str = Option(..., "--recipe", "-r", help="Recipe file, or a name under $ATLAS_RECIPES_DIR"),
+    out: Path | None = Option(
+        None, "--out", "-o", help="Style dir holding the chunk jobs (default $ATLAS_JOBS_DIR/<recipe>)"
+    ),
+    inputs: Path | None = Option(
+        None, "--inputs", help="Where the block's DEM and OSM are fetched and reused (default <out>/.block)"
+    ),
+    dem: Path | None = Option(None, "--dem", help="Use this DEM (GeoTIFF/VRT covering the block) instead of fetching"),
+    dem_source: str | None = Option(
+        None, "--dem-source", help="GLO-30 source for the fetch (default $ATLAS_DEM_SOURCE)"
+    ),
+    allow_missing: bool = Option(False, "--allow-missing", help="Fill absent (all-ocean) GLO-30 tiles with 0 m"),
+    max_tiles: int = Option(16, "--max-tiles", min=1, help="GLO-30 tile budget for the block's DEM fetch"),
+    osm_layers: str = Option(
+        "water,rivers,roads,forest,urban",
+        "--osm-layers",
+        help="OSM layer presets fetched once for the block and burnt as controls ('' = none)",
+    ),
+    layer: list[str] = Option([], "--layer", help="Extra name=path vector layer, as for `chunk` (repeatable)"),
+    land: Path | None = Option(
+        None, "--land", help="Land polygon file: skip chunks with no land in their tile (not burnt as a control)"
+    ),
+    sea_level: float | None = Option(None, "--sea-level", help="Metres: add a 'sea' mask, as for `chunk`"),
+    with_labels: bool = Option(False, "--labels", help="Fetch OSM places with the block and label every chunk"),
+    size: int = Option(1024, "--size", help="Tile side in px: 256, 512 or 1024"),
+    margin: int = Option(128, "--margin", help="Px of neighbour context on every side, a multiple of 32"),
+    plan_only: bool = Option(False, "--plan", help="Print the plan (order, sea chunks, done chunks) and stop"),
+    controls_only: bool = Option(
+        False, "--controls-only", help="Stop each chunk after its controls (no GPU, no ATLAS_ALLOW_BAKE)"
+    ),
+    models_dir: Path | None = Option(None, "--models-dir", help="Default $ATLAS_MODELS_DIR"),
+    comfyui_url: str | None = Option(None, "--comfyui-url", help="Default $COMFYUI_BASE_URL"),
+) -> None:
+    """A block of chunks: one DEM and OSM fetch, seam order, sea and finished chunks skipped. Re-run to resume."""
+    if not (plan_only or controls_only) and not config.bake_allowed():
+        _fail(f"refusing to bake: set {config.ENV_ALLOW_BAKE}=1 (or pass --plan / --controls-only)", EXIT_REFUSED)
+
+    from argus_atlas.blocks import INPUTS_DIR, bbox_tiles, block_dem, block_osm, plan_block, ring_tiles, run_block
+    from argus_atlas.chunks import parse_tile
+    from argus_atlas.controls import validate_layer_name
+    from argus_atlas.osm import LAYER_PRESETS
+    from argus_atlas.recipes import load_recipe, recipe_record, recipe_workflow
+
+    try:
+        if (tile is None) == (bbox is None):
+            raise AtlasError("give exactly one of --tile (with --rings) or --bbox (with --zoom)")
+        if tile is not None and zoom is not None:
+            raise AtlasError("--zoom goes with --bbox; --tile carries its own zoom")
+        if bbox is not None and rings:
+            raise AtlasError("--rings goes with --tile")
+        if tile is not None:
+            tiles = ring_tiles(*parse_tile(tile), rings)
+        else:
+            if zoom is None:
+                raise AtlasError("--bbox needs --zoom")
+            tiles = bbox_tiles(BBox.parse(bbox), zoom)
+        loaded, recipe_path = load_recipe(recipe, recipes_root=config.recipes_dir())
+        record = recipe_record(loaded)
+        workflow = None if (plan_only or controls_only) else recipe_workflow(loaded, recipe_path)
+        names = [n.strip() for n in osm_layers.split(",") if n.strip()]
+        unknown = [n for n in names if n not in LAYER_PRESETS or LAYER_PRESETS[n].geometry == "point"]
+        if unknown:
+            raise AtlasError(f"unknown OSM control layer(s) {', '.join(unknown)}")
+        extra = _parse_layers(layer)
+        if dem is not None and not dem.expanduser().is_file():
+            raise AtlasError(f"DEM not found: {dem}")
+        for name, path in extra.items():
+            validate_layer_name(name)
+            if not path.expanduser().is_file():
+                raise AtlasError(f"layer {name!r} not found: {path}")
+        style_dir = out if out is not None else config.jobs_dir() / loaded.name
+        plan = plan_block(tiles, record, style_dir, size=size, margin=margin, land=land)
+    except FileNotFoundError as exc:
+        _fail(str(exc), EXIT_INPUT)
+        return
+    except AtlasError as exc:
+        _fail(f"chunks failed: {exc}", EXIT_INPUT)
+        return
+
+    typer.echo(
+        f"block of {len(plan.tiles)} chunk(s) at z{plan.zoom} ({plan.size} px + {plan.margin} px margin, "
+        f"native z{plan.native_zoom}) for {plan.recipe} in {style_dir}"
+    )
+    typer.echo(f"  bbox      {plan.bbox.as_text()}")
+    typer.echo(f"  sea       {len(plan.sea)} skipped" + (f": {' '.join(plan.sea)}" if plan.sea else ""))
+    typer.echo(f"  done      {len(plan.done)}, to bake {len(plan.todo)}")
+    if plan_only:
+        for text in plan.tiles:
+            typer.echo(f"  {text}{'  (done)' if text in plan.done else ''}")
+        return
+    if not plan.todo and (controls_only or not with_labels):
+        typer.echo("nothing to bake")
+        return
+
+    def log(message: str) -> None:
+        typer.echo(message)
+
+    work = inputs if inputs is not None else style_dir / INPUTS_DIR
+    try:
+        work.mkdir(parents=True, exist_ok=True)
+        if dem is None and plan.todo:  # labelling finished chunks needs no DEM
+            dem = block_dem(
+                plan.bbox,
+                work,
+                source=config.dem_source(dem_source),
+                allow_missing=allow_missing,
+                max_tiles=max_tiles,
+                log=log,
+            )
+        layers: dict[str, Path] = {}
+        places = None
+        label = with_labels and not controls_only  # run_block labels nothing with --controls-only
+        fetch = (names if plan.todo else []) + (["places"] if label else [])
+        if fetch:
+            manifest = block_osm(plan.bbox, work, fetch, plan.native_zoom, url=config.overpass_url(), log=log)
+            for name in names:
+                if name in manifest["layers"]:
+                    layers[name] = work / "osm" / manifest["layers"][name]["path"]
+            if label:
+                if "places" in manifest["layers"]:
+                    places = work / "osm" / manifest["layers"]["places"]["path"]
+                else:
+                    log("labels: no OSM places in the block, chunks stay unlabelled")
+        layers.update(extra)
+        backend = None
+        if workflow is not None:
+            from argus_atlas.backends import backend_from_env
+
+            backend = backend_from_env(workflow=workflow, base_url=comfyui_url)
+        run_block(
+            plan,
+            record,
+            style_dir,
+            dem=dem,
+            layers=layers,
+            places=places,
+            sea_level=sea_level,
+            backend=backend,
+            models_root=config.models_dir(models_dir),
+            controls_only=controls_only,
+            log=log,
+            progress=lambda ev: typer.echo(f"  [{ev.type}] {ev.message}", err=ev.type == "error"),
+        )
+    except FileNotFoundError as exc:
+        _fail(str(exc), EXIT_INPUT)
+        return
+    except AtlasError as exc:  # BackendError, GdalError, DemSourceError included
+        _fail(f"chunks failed: {exc} (re-run to resume)", 1)
+        return
+    typer.echo(f"block done: {len(plan.tiles)} chunk(s) in {style_dir}")
+
+
+@app.command()
 def labels(
     source: Path = Option(
         ...,

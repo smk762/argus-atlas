@@ -7,7 +7,7 @@ PMTiles archive:
 * **Chunk zooms** are copied byte for byte from the archives. Neighbouring chunks
   never share a tile, so a tile two archives both carry with different bytes is
   an error that names both jobs, never a silent overwrite.
-* **Overviews** below the coarsest chunk zoom, down to *overview_min*, are cut by
+* **Overviews** below the chunk zoom, down to *overview_min*, are cut by
   ``gdal2tiles`` from a ``gdalbuildvrt -addalpha`` mosaic of the chunks' gated crops,
   so the painted map does not vanish when a viewer zooms out. Gaps between chunks
   (skipped sea) stay transparent.
@@ -34,13 +34,12 @@ from argus_atlas.jobs import is_safe_id, load_sidecar
 from argus_atlas.labels import LABELS_NAME
 from argus_atlas.mercator import mercator_to_bbox
 from argus_atlas.models import AtlasError, Grid, JobSidecar
-from argus_atlas.tiles import TilesError, collect_xyz, pack_pmtiles
+from argus_atlas.tiles import CHUNK_SLIVER_PX, TilesError, collect_xyz, pack_pmtiles
 
 logger = structlog.get_logger()
 
 MOSAIC_MANIFEST = "mosaic.json"
 DEFAULT_OVERVIEW_MIN = 5
-CHUNK_SLIVER_PX = 0.5
 
 TileKey = tuple[int, int, int]
 
@@ -50,19 +49,42 @@ class MosaicError(TilesError):
 
 
 def style_chunks(style_dir: Path) -> list[tuple[Path, JobSidecar]]:
-    """``(job_dir, sidecar)`` of every chunk job under *style_dir* with its crop and archive on disk."""
+    """``(job_dir, sidecar)`` of every chunk of the one recipe under *style_dir* with its crop and archive on disk.
+
+    As in :func:`argus_atlas.chunks.find_neighbours`: a chunk job re-baked with other
+    params (its bake was not resolved from its recipe) is not that recipe's chunk and
+    is skipped, and a second name (a symlink) for a job is read once. Chunks of two
+    recipes, or a crop or archive whose bytes no longer match ``job.json``, are an
+    error, not a skip.
+    """
     found = []
+    seen: set[Path] = set()
+    recipes: dict[str, str] = {}
     for job_dir in sorted(p for p in style_dir.iterdir() if p.is_dir() and is_safe_id(p.name)):
+        real = job_dir.resolve()
+        if real in seen:
+            continue
+        seen.add(real)
         try:
             sidecar = load_sidecar(job_dir)
         except (OSError, AtlasError):
             continue
-        chunk, tiles = sidecar.chunk, sidecar.tiles
-        if chunk is None or chunk.image is None or tiles is None:
+        chunk, tiles, recipe, bake = sidecar.chunk, sidecar.tiles, sidecar.recipe, sidecar.bake
+        if chunk is None or chunk.image is None or tiles is None or recipe is None or bake is None:
             continue
-        if not (job_dir / tiles.archive.path).is_file() or not (job_dir / chunk.image.path).is_file():
+        if bake.params.recipe != recipe.recipe.name:
+            continue  # re-baked with other params: not this recipe's chunk
+        crop, archive = job_dir / chunk.image.path, job_dir / tiles.archive.path
+        if not archive.is_file() or not crop.is_file():
             continue
+        for ref, path in ((chunk.image, crop), (tiles.archive, archive)):
+            if sha256_file(path) != ref.sha256:
+                raise MosaicError(f"{sidecar.job_id}: {ref.path} changed since its job.json")
+        recipes.setdefault(recipe.recipe.name, sidecar.job_id)
         found.append((job_dir, sidecar))
+    if len(recipes) > 1:
+        held = ", ".join(f"{name} ({job_id})" for name, job_id in sorted(recipes.items()))
+        raise MosaicError(f"{style_dir} holds chunks of more than one recipe: {held}")
     return found
 
 
@@ -127,9 +149,16 @@ def merge_labels(chunks: list[tuple[Path, JobSidecar]]) -> dict:
         path = job_dir / LABELS_NAME
         if not path.is_file():
             continue
-        for feature in json.loads(path.read_text(encoding="utf-8")).get("features", []):
-            lon, lat = feature["geometry"]["coordinates"][:2]
-            key = (str(feature.get("properties", {}).get("name")), round(lon, 6), round(lat, 6))
+        try:
+            collection = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise MosaicError(f"{path} is not readable GeoJSON: {exc}") from exc
+        for feature in collection.get("features") or []:
+            coords = (feature.get("geometry") or {}).get("coordinates") or []
+            if len(coords) < 2:
+                continue  # labels are points; anything else is not ours to place
+            lon, lat = coords[:2]
+            key = (str((feature.get("properties") or {}).get("name")), round(lon, 6), round(lat, 6))
             if key not in seen:
                 seen.add(key)
                 features.append(feature)
@@ -143,13 +172,20 @@ def _outputs(out: Path) -> tuple[bool, Path, Path]:
     return False, out / LABELS_NAME, out / MOSAIC_MANIFEST
 
 
+def _check_dir(out: Path) -> None:
+    """An XYZ output dir must be new, empty, or an earlier mosaic. Checked before any work is done."""
+    if not out.exists():
+        return
+    if not out.is_dir():
+        raise MosaicError(f"{out} exists and is not a directory")
+    if any(out.iterdir()) and not (out / MOSAIC_MANIFEST).is_file():
+        raise MosaicError(f"{out} is not empty and holds no {MOSAIC_MANIFEST}: refusing to write into it")
+
+
 def _prepare_dir(out: Path) -> None:
-    """An XYZ output dir must be new, empty, or an earlier mosaic (whose zoom dirs are replaced)."""
+    """Replace an earlier mosaic's zoom dirs in *out* (already checked by :func:`_check_dir`)."""
     if out.exists():
-        entries = list(out.iterdir())
-        if entries and not (out / MOSAIC_MANIFEST).is_file():
-            raise MosaicError(f"{out} is not empty and holds no {MOSAIC_MANIFEST}: refusing to write into it")
-        for entry in entries:
+        for entry in out.iterdir():
             if entry.is_dir() and entry.name.isdigit():
                 shutil.rmtree(entry)
     out.mkdir(parents=True, exist_ok=True)
@@ -163,12 +199,18 @@ def mosaic(style_dir: Path, out: Path, *, overview_min: int = DEFAULT_OVERVIEW_M
     if not chunks:
         raise MosaicError(f"no baked chunks under {style_dir}")
     as_pmtiles, labels_path, manifest_path = _outputs(out)
+    if not as_pmtiles:
+        _check_dir(out)  # refuse before the tiling, not after it
+    labels = merge_labels(chunks)  # a bad labels file fails here, before any output is touched
     gdal_ops.require_gdal()
     merged = merge_archives(chunks)
     grid = union_grid(chunks)
-    chunk_min = min(z for z, _, _ in merged)
+    # Chunks may start at different zooms: overviews run up to the finest start, so no chunk leaves a gap.
+    starts = [s.tiles.min_zoom for _, s in chunks if s.tiles is not None]
+    chunk_min, overview_max = min(starts), max(starts) - 1
     commands: list = []
-    work = Path(tempfile.mkdtemp(prefix="atlas-mosaic-"))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix=".atlas-mosaic-", dir=out.parent))  # beside out, so tiles are renamed in
     try:
         tiles: list[tuple[int, int, int, Path]] = []
         raw = work / "chunks"
@@ -177,10 +219,10 @@ def mosaic(style_dir: Path, out: Path, *, overview_min: int = DEFAULT_OVERVIEW_M
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
             tiles.append((z, x, y, path))
-        if overview_min < chunk_min:
+        if overview_min <= overview_max:
             crops = [d / s.chunk.image.path for d, s in chunks if s.chunk and s.chunk.image]
-            overviews, commands = build_overviews(crops, grid, overview_min, chunk_min - 1, work)
-            tiles += overviews
+            overviews, commands = build_overviews(crops, grid, overview_min, overview_max, work)
+            tiles += [t for t in overviews if t[:3] not in merged]  # a chunk's own tile wins
         zooms = sorted({t[0] for t in tiles})
         metadata = {"argus_mosaic": json.dumps({"style_dir": style_dir.name, "chunks": len(chunks)})}
         if as_pmtiles:
@@ -190,11 +232,10 @@ def mosaic(style_dir: Path, out: Path, *, overview_min: int = DEFAULT_OVERVIEW_M
             for z, x, y, path in tiles:
                 dst = out / str(z) / str(x) / f"{y}.png"
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(path, dst)
+                path.replace(dst)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
-    labels = merge_labels(chunks)
     labels_path.parent.mkdir(parents=True, exist_ok=True)
     labels_path.write_text(json.dumps(labels, ensure_ascii=False) + "\n", encoding="utf-8")
     bbox = mercator_to_bbox(*grid.bounds)
@@ -212,9 +253,9 @@ def mosaic(style_dir: Path, out: Path, *, overview_min: int = DEFAULT_OVERVIEW_M
             {
                 "job_id": s.job_id,
                 "tile": s.chunk.tile if s.chunk else None,
-                "archive_sha256": sha256_file(d / s.tiles.archive.path) if s.tiles else None,
+                "archive_sha256": s.tiles.archive.sha256 if s.tiles else None,  # re-checked in style_chunks
             }
-            for d, s in chunks
+            for _, s in chunks
         ],
         "labels": {"path": labels_path.name, "count": len(labels["features"])},
         "commands": [c.model_dump() for c in commands],

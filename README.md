@@ -94,6 +94,15 @@ argus-atlas chunks --tile 10/1009/641 --rings 3 --recipe antique --out maps/anti
 - **Resume.** A chunk that already has this recipe's gated crop and archive, at the same size and margin, is skipped. The first failure stops the run, because later chunks would seam against a gap. Re-run the same command to continue.
 - `--plan` prints the order, the sea chunks and the finished chunks without fetching or baking. `--bbox … --zoom z` picks the chunks by area instead of `--tile`/`--rings`.
 
+### One tile set for the region
+
+Each chunk has its own `fantasy.pmtiles`. `argus-atlas mosaic <style-dir> --out <dir | file.pmtiles>` combines every baked chunk of a style into one tile set a viewer can load:
+
+- Chunk tiles are copied unchanged. A tile that two archives both carry with different pixels is an error naming both jobs.
+- Overview zooms below the chunk zoom, down to `--overview-min` (default 5), are cut by `gdal2tiles` from a VRT of the chunks' gated crops, so the painted map stays visible when you zoom out. Gaps between chunks (skipped sea) stay transparent.
+- Every chunk's `labels.geojson` is merged into one, with a name at the same point kept once. It goes to `labels.geojson` in the directory, or `<stem>.labels.geojson` beside a `.pmtiles`.
+- `mosaic.json` (or `<stem>.json`) records the zoom range, bounds, tile count, each source chunk's job id, tile and archive SHA256, and the GDAL argv. Writing to a directory replaces an earlier mosaic there, and refuses a directory that holds anything else.
+
 ## Place names
 
 The prompts forbid text, because diffusion paints illegible lettering and breaks tile seams, so the bake has no names. `argus-atlas labels` adds them as a vector overlay the viewer draws on top, in a real font. Names never reach the model, `fantasy.tif` or the PMTiles.
@@ -344,6 +353,6 @@ The launch and onboarding plan lives in [TODO.md](TODO.md). Agents working in th
 
 - Downloading a DEM on the server. `argus-atlas dem` fetches Copernicus GLO-30 from the CLI; the API only names DEMs already under `ATLAS_DEM_DIR`.
 - Training, captioning, or curating.
-- A worldwide pyramid, or merging chunk archives into one (chunks are laid side by side by the caller).
+- A worldwide pyramid. `mosaic` merges the chunks of one style; nothing builds a global tile set.
 - Serving tiles beyond `GET` of the finished PMTiles file.
 - GeoServer, PostGIS, tippecanoe, Leaflet, or any game logic.

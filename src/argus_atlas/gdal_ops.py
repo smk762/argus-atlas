@@ -583,6 +583,11 @@ def stack_argv(bands: list[Path], dst_vrt: Path) -> list[str]:
     return ["gdalbuildvrt", "-q", "-separate", str(dst_vrt), *map(str, bands)]
 
 
+def mosaic_vrt_argv(sources: list[Path], dst_vrt: Path) -> list[str]:
+    """One VRT laying RGB rasters on one lattice side by side, with an alpha band so gaps stay transparent."""
+    return ["gdalbuildvrt", "-q", "-addalpha", str(dst_vrt), *map(str, sources)]
+
+
 def strip_aux(path: Path) -> None:
     """Remove the ``.aux.xml`` sidecar GDAL writes next to a PNG, so the model
     inputs really carry no georeferencing — ``job.json`` is the only authority."""

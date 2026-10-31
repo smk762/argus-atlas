@@ -170,6 +170,12 @@ def chunk_bbox(z: int, x: int, y: int) -> BBox:
     return mercator_to_bbox(*tile_bounds(z, x, y))
 
 
+def canvas_bbox(z: int, x: int, y: int, *, size: int = DEFAULT_CHUNK_SIZE, margin: int = DEFAULT_MARGIN) -> BBox:
+    """The lon/lat box of the chunk's canvas, margin included: what its DEM and OSM must cover."""
+    canvas, _ = chunk_grids(z, x, y, size=size, margin=margin)
+    return mercator_to_bbox(*canvas.bounds)
+
+
 def neighbour_tiles(z: int, x: int, y: int) -> list[tuple[int, int, int]]:
     """The up-to-eight tiles around ``z/x/y`` (no wrap across the antimeridian)."""
     n = 1 << z
@@ -513,7 +519,7 @@ def crop_chunk(job_dir: Path, sidecar: JobSidecar) -> tuple[FileRef, GdalCommand
     return FileRef(path=dst.name, sha256=sha256_file(dst)), command
 
 
-def _published(job_dir: Path) -> JobSidecar | None:
+def published_chunk(job_dir: Path) -> JobSidecar | None:
     """The job's sidecar if it holds a gated crop still on disk (what neighbours and the archive use), else None."""
     try:
         sidecar = load_sidecar(job_dir)
@@ -565,7 +571,7 @@ def run_chunk(
     if not controls_only and (backend is None or models_root is None):
         raise AtlasError("baking a chunk needs a backend and a models root")
     job_id = out_dir.name
-    previous = _published(out_dir)
+    previous = published_chunk(out_dir)
 
     def emit(kind: str, message: str) -> None:
         if progress is not None:

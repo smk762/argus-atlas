@@ -79,6 +79,21 @@ To grow a map piece by piece, bake it one XYZ tile at a time. `argus-atlas chunk
 
 `--controls-only` stops after the seam controls and needs no GPU.
 
+### A block of chunks
+
+`argus-atlas chunks` bakes many chunks at once and handles the ordering for you:
+
+```bash
+argus-atlas chunks --tile 10/1009/641 --rings 3 --recipe antique --out maps/antique \
+  --sea-level 0 --allow-missing --land land.gpkg --labels --plan   # drop --plan to bake
+```
+
+- **One fetch for the block.** The lon/lat box covering every chunk's canvas, margins included, is fetched once: the DEM with `dem --cover`, and the OSM control layers (`--osm-layers`, by default `water,rivers,roads,forest,urban`) at the chunks' native zoom. With `--labels` the fetch includes `places`, and every chunk is labelled afterwards. Both go to `--inputs` (by default `<out>/.block`) and are reused while their manifests cover the block (a smaller block inside a fetched one fetches nothing; a new layer refetches the same box with the old layers kept). Point a second recipe's run at the same `--inputs` and nothing is fetched twice. `--dem` uses your own DEM instead.
+- **Seam order.** Chunks are baked north to south, then west to east, so each one finds its west and north neighbours already baked.
+- **Sea skipping.** With `--land`, chunks whose own tile has no land under the polygon are skipped. `--land` is only a filter here; to burn it as a control too, pass `--layer land=<file>`.
+- **Resume.** A chunk that already has this recipe's gated crop and archive, at the same size and margin, is skipped. The first failure stops the run, because later chunks would seam against a gap. Re-run the same command to continue.
+- `--plan` prints the order, the sea chunks and the finished chunks without fetching or baking. `--bbox … --zoom z` picks the chunks by area instead of `--tile`/`--rings`.
+
 ## Place names
 
 The prompts forbid text, because diffusion paints illegible lettering and breaks tile seams, so the bake has no names. `argus-atlas labels` adds them as a vector overlay the viewer draws on top, in a real font. Names never reach the model, `fantasy.tif` or the PMTiles.
@@ -125,7 +140,7 @@ argus-atlas dem --bbox 10.55,45.40,10.95,45.90 --out dem/garda.tif   # provenanc
 argus-atlas controls --dem dem/garda.tif --bbox 10.55,45.40,10.95,45.90 --out ./jobs/garda
 ```
 
-A tile the bucket lacks is an error that names it. Copernicus leaves out all-ocean tiles, so for a coast pass `--allow-missing` to fill them with 0 m, the sea level GLO-30 uses elsewhere. `--source` (or `ATLAS_DEM_SOURCE`) points at a mirror URL or a local directory laid out as `<key>/<key>.tif`. The command prints the Copernicus attribution; keep it with anything you publish. `controls` may widen the canvas past the bbox to reach whole multiples of 64 px, and cells outside the DEM become NoData, so fetch a slightly larger bbox if the edges matter. There is no server route for this: it is an open-ended download plus a GDAL job, and it belongs with the operator who builds a job.
+A tile the bucket lacks is an error that names it. Copernicus leaves out all-ocean tiles, so for a coast pass `--allow-missing` to fill them with 0 m, the sea level GLO-30 uses elsewhere. `--source` (or `ATLAS_DEM_SOURCE`) points at a mirror URL or a local directory laid out as `<key>/<key>.tif`. The command prints the Copernicus attribution; keep it with anything you publish. `controls` may widen the canvas past the bbox to reach whole multiples of 64 px, and cells outside the DEM become NoData, so pass `--cover` when the edges matter: it snaps the window outward instead, so the GeoTIFF contains the whole bbox, still on the lattice. For a chunk, `--tile z/x/y` (with the same `--size`/`--margin` as `chunk`) fetches exactly that chunk's canvas, margin included, and implies `--cover`. An AOI touching more than 16 GLO-30 tiles is refused unless you raise `--max-tiles`. There is no server route for this: it is an open-ended download plus a GDAL job, and it belongs with the operator who builds a job.
 
 Open `jobs/sample/hillshade.png`. If the relief looks right, the georeferencing is already fixed; the bake only changes pixel colours inside that frame.
 

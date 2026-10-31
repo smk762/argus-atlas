@@ -46,7 +46,16 @@ Anything OGR can read works as a `controls --layer name=path` input, in any CRS;
 | **NASA SEDAC**, `https://sedac.ciesin.columbia.edu` | Gridded population (GPW), infrastructure, environment | Population rasters as an `urban` proxy. |
 | **Africa GeoPortal**, `https://africageoportal.com` | Boundaries, land cover, infrastructure across Africa | Regional layers for African AOIs. |
 
+## Geocaches
+
+Geocaching.com is not a source ([#10](https://github.com/smk762/argus-atlas/issues/10)). The Australian open listings are.
+
+| Source | What | For atlas |
+|---|---|---|
+| **Geocaching Australia**, `https://geocaching.com.au/` | Volunteer listing site, unaffiliated with Groundspeak. OKAPI-shaped JSON API at `/api/services/`. Uploaded content is **CC BY-NC-SA 2.5**. | A point layer or hunt waypoints, non-commercial use only. `opencaching.allow_reuse("au")` is the gate: it records the attribution and refuses a commercial reuse or a paid app. The API wants a consumer key and a logged-in member; anonymous calls are refused, and a bulk dump is arranged with the site administrators rather than pulled through the API. |
+| **Geocaching.com** (Groundspeak) | Proprietary listings. Partner API under a separate licence. | Out. No public geodatabase, and the partner terms do not allow an anonymous copy on a baked map. |
+
 ## Notes
 
-- Licences differ: OSM is ODbL (attribution + share-alike for derived databases), Natural Earth is public domain, Copernicus DEM and GADM have their own terms. `osm.json` and `job.json` record provenance; keep the attribution with any published tileset.
+- Licences differ: OSM is ODbL (attribution + share-alike for derived databases), Natural Earth is public domain, Copernicus DEM and GADM have their own terms, Geocaching Australia listings are CC BY-NC-SA 2.5. `osm.json` and `job.json` record provenance; keep the attribution with any published tileset. A Geocaching Australia extract has to keep the same licence (share-alike) and stay non-commercial, including a hunt that charges a fee.
 - A new layer name outside `COMPOSITE_PALETTE` is burnt as a mask and reachable in a template as `$<name>`; to paint it in the composite add a colour to the palette in `controls.py`.

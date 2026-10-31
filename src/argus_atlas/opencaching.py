@@ -44,7 +44,7 @@ class DataLicence:
     spdx: str
     url: str
     attribution: str
-    commercial: bool
+    allows_commercial: bool
     share_alike: bool
 
 
@@ -72,7 +72,7 @@ AU = Installation(
         spdx="CC-BY-NC-SA-2.5",
         url="https://creativecommons.org/licenses/by-nc-sa/2.5/",
         attribution=AU_ATTRIBUTION,
-        commercial=False,
+        allows_commercial=False,
         share_alike=True,
     ),
 )
@@ -88,14 +88,15 @@ def allow_reuse(installation: str = "au", *, commercial: bool = False, app_is_fr
     ``app_is_free`` is the API access rule: the key is provided without cost
     only when the app is too.
     """
-    if installation in REJECTED_SOURCES:
-        raise AtlasError(REJECTED_SOURCES[installation])
+    key = installation.strip().lower()
+    if key in REJECTED_SOURCES:
+        raise AtlasError(REJECTED_SOURCES[key])
     try:
-        inst = INSTALLATIONS[installation]
+        inst = INSTALLATIONS[key]
     except KeyError:
         known = ", ".join(sorted(INSTALLATIONS))
         raise AtlasError(f"unknown OpenCaching installation {installation!r}; licensed so far: {known}") from None
-    if commercial and not inst.licence.commercial:
+    if commercial and not inst.licence.allows_commercial:
         raise AtlasError(f"{inst.name} listings are {inst.licence.spdx}; commercial reuse is outside that licence")
     if inst.app_must_be_free and not app_is_free:
         raise AtlasError(
@@ -108,6 +109,6 @@ def allow_reuse(installation: str = "au", *, commercial: bool = False, app_is_fr
         "license": inst.licence.spdx,
         "license_url": inst.licence.url,
         "attribution": inst.licence.attribution,
-        "commercial": False,
+        "commercial": commercial,
         "share_alike": inst.licence.share_alike,
     }

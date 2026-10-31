@@ -101,10 +101,14 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/argus-atlas
+          # Tags are PEP 440 (v0.3.0a1, v0.4.0rc1), which semver rejects: pep440 gives the
+          # version tag for every release, major.minor only for finals, and latest=auto
+          # moves :latest only on a final, never on an alpha or release candidate.
+          flavor: |
+            latest=auto
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
+            type=pep440,pattern={{version}}
+            type=pep440,pattern={{major}}.{{minor}}
       - uses: docker/build-push-action@v6
         with:
           context: .

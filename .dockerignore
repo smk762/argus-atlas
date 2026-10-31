@@ -13,3 +13,9 @@ build
 .mypy_cache
 .coverage
 htmlcov
+
+# Local data, job output and settings: mounted at run time, never baked into the image
+.env
+data
+jobs
+output

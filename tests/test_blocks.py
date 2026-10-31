@@ -59,6 +59,8 @@ def test_bbox_tiles_cover_the_box() -> None:
     xmin, ymin, xmax, ymax = tile_bounds(Z, X0, Y0)
     inside = mercator_to_bbox(xmin + 10, ymin + 10, xmax + (xmax - xmin) / 2, ymax - 10)
     assert bbox_tiles(inside, Z) == [(Z, X0, Y0), (Z, X0 + 1, Y0)]
+    with pytest.raises(AtlasError, match="block limit"):
+        bbox_tiles(mercator_to_bbox(*tile_bounds(6, 33, 22)), Z)
 
 
 def test_block_is_in_seam_order_and_covers_every_canvas() -> None:
@@ -129,6 +131,8 @@ def test_run_block_bakes_in_order_resumes_and_labels(dem: Path, tmp_path: Path, 
     again = plan_block(tiles, RECIPE, style, size=SIZE, margin=MARGIN, land=land)
     assert again.done == again.tiles and again.todo == []
     assert run_block(again, RECIPE, style, dem=dem, backend=FakeBackend(), models_root=models_dir) == []
+    assert run_block(again, RECIPE, style, dem=dem, controls_only=True) == []  # never unpublishes a done chunk
+    assert all(chunk_done(style / chunk_job_id("antique", *t), RECIPE, size=SIZE, margin=MARGIN) for t in tiles[:3])
     other = recipe_record(Recipe(name="antique", preset="tolkien", checkpoint="sd_xl_base_1.0.safetensors"))
     assert plan_block(tiles, other, style, size=SIZE, margin=MARGIN, land=land).done == []  # a changed recipe rebakes
 
@@ -153,6 +157,8 @@ def test_cli_chunks_plan_and_controls_only(dem: Path, tmp_path: Path) -> None:
 
     both = runner.invoke(app, ["chunks", "--tile", "1/0/0", "--bbox", "0,0,1,1", "--plan", *common])
     assert both.exit_code == 2 and "exactly one of" in both.output
+    stray = runner.invoke(app, ["chunks", "--tile", "1/0/0", "--zoom", "3", "--plan", *common])
+    assert stray.exit_code == 2 and "--zoom goes with --bbox" in stray.output
     bad = runner.invoke(app, ["chunks", "--tile", "1/0/0", "--plan", "--osm-layers", "places", *common])
     assert bad.exit_code == 2 and "places" in bad.output
 
@@ -174,6 +180,8 @@ def test_block_inputs_are_fetched_once(tmp_path: Path, monkeypatch: pytest.Monke
         out.mkdir(parents=True, exist_ok=True)
         manifest = {"bbox": box.as_text(), "zoom": zoom, "layers": {n: {"path": f"{n}.geojson"} for n in layers[1:]}}
         manifest["skipped"] = layers[:1]
+        for n in layers[1:]:
+            (out / f"{n}.geojson").write_text("{}")
         (out / "osm.json").write_text(json.dumps(manifest))
         return manifest
 
@@ -184,5 +192,13 @@ def test_block_inputs_are_fetched_once(tmp_path: Path, monkeypatch: pytest.Monke
         blocks.block_osm(bbox, tmp_path, ["water", "roads"], 14, url="x")
     assert calls == ["dem", "osm"]
     blocks.block_osm(bbox, tmp_path, ["water", "roads", "forest"], 14, url="x")  # a new layer: fetch again
+    blocks.block_osm(bbox, tmp_path, ["water", "roads"], 14, url="x")  # the refetch kept the earlier layers
     blocks.block_osm(bbox, tmp_path, ["water", "forest"], 13, url="x")  # another zoom: fetch again
     assert calls == ["dem", "osm", "osm", "osm"]
+    inner = mercator_to_bbox(*tile_bounds(Z + 1, 2 * X0, 2 * Y0))
+    blocks.block_osm(inner, tmp_path, ["water", "forest"], 13, url="x")  # a box inside the last fetch: reused
+    assert blocks.block_dem(inner, tmp_path, source="x") == tmp_path / "dem.tif"
+    assert calls == ["dem", "osm", "osm", "osm"]
+    (tmp_path / "osm" / "forest.geojson").unlink()
+    blocks.block_osm(bbox, tmp_path, ["water", "forest"], 13, url="x")  # a layer file gone: fetch again
+    assert calls == ["dem", "osm", "osm", "osm", "osm"]

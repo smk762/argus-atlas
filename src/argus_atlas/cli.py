@@ -533,12 +533,16 @@ def chunks(
     from argus_atlas.blocks import INPUTS_DIR, bbox_tiles, block_dem, block_osm, plan_block, ring_tiles, run_block
     from argus_atlas.chunks import parse_tile
     from argus_atlas.controls import validate_layer_name
-    from argus_atlas.osm import DEFAULT_OVERPASS_URL, LAYER_PRESETS
+    from argus_atlas.osm import LAYER_PRESETS
     from argus_atlas.recipes import load_recipe, recipe_record, recipe_workflow
 
     try:
         if (tile is None) == (bbox is None):
             raise AtlasError("give exactly one of --tile (with --rings) or --bbox (with --zoom)")
+        if tile is not None and zoom is not None:
+            raise AtlasError("--zoom goes with --bbox; --tile carries its own zoom")
+        if bbox is not None and rings:
+            raise AtlasError("--rings goes with --tile")
         if tile is not None:
             tiles = ring_tiles(*parse_tile(tile), rings)
         else:
@@ -579,7 +583,7 @@ def chunks(
         for text in plan.tiles:
             typer.echo(f"  {text}{'  (done)' if text in plan.done else ''}")
         return
-    if not plan.todo and not controls_only and not with_labels:
+    if not plan.todo and (controls_only or not with_labels):
         typer.echo("nothing to bake")
         return
 
@@ -589,7 +593,7 @@ def chunks(
     work = inputs if inputs is not None else style_dir / INPUTS_DIR
     try:
         work.mkdir(parents=True, exist_ok=True)
-        if dem is None:
+        if dem is None and plan.todo:  # labelling finished chunks needs no DEM
             dem = block_dem(
                 plan.bbox,
                 work,
@@ -600,14 +604,14 @@ def chunks(
             )
         layers: dict[str, Path] = {}
         places = None
-        fetch = names + (["places"] if with_labels else [])
+        label = with_labels and not controls_only  # run_block labels nothing with --controls-only
+        fetch = (names if plan.todo else []) + (["places"] if label else [])
         if fetch:
-            url = os.environ.get("ATLAS_OVERPASS_URL") or DEFAULT_OVERPASS_URL
-            manifest = block_osm(plan.bbox, work, fetch, plan.native_zoom, url=url, log=log)
+            manifest = block_osm(plan.bbox, work, fetch, plan.native_zoom, url=config.overpass_url(), log=log)
             for name in names:
                 if name in manifest["layers"]:
                     layers[name] = work / "osm" / manifest["layers"][name]["path"]
-            if with_labels:
+            if label:
                 if "places" in manifest["layers"]:
                     places = work / "osm" / manifest["layers"]["places"]["path"]
                 else:

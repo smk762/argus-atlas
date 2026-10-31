@@ -36,16 +36,20 @@ RUN apt-get update \
 
 COPY . .
 
-# Extras baked into the image. The system Python is Ubuntu's (externally
-# managed), so the package goes into its own venv; gdal2tiles.py keeps using
-# /usr/bin/python3 + the system osgeo bindings.
+# Extras baked into the image, synced from uv.lock (--locked fails the build
+# if the lock is out of date with pyproject.toml). The system Python is
+# Ubuntu's (externally managed), so the package goes into its own venv;
+# gdal2tiles.py keeps using /usr/bin/python3 + the system osgeo bindings.
 ARG EXTRAS="server,cli,tiles"
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
+RUN uv sync --locked --no-editable --no-cache --python /usr/bin/python3 \
+        $(echo "${EXTRAS}" | tr ',' '\n' | sed 's/^/--extra /')
 # A uv venv has no pip of its own, so uv installs the pinned pip 26.2.2 wheel
 # (hash-checked) alongside certifi 2026.10.19+ — both dropped the emSign roots.
-RUN uv venv /opt/venv --python /usr/bin/python3 \
-    && uv pip install --python /opt/venv/bin/python --no-cache \
+# After the sync, which would remove anything the lock doesn't name.
+RUN uv pip install --python /opt/venv/bin/python --no-cache \
         "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70" \
-        "certifi>=2026.10.19" ".[${EXTRAS}]"
+        "certifi>=2026.10.19"
 
 ENV PATH="/opt/venv/bin:${PATH}" \
     ATLAS_JOBS_DIR=/data/out/atlas \

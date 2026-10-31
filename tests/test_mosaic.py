@@ -10,6 +10,7 @@ from argus_atlas import mosaic as mosaic_mod
 from argus_atlas.chunks import chunk_job_id, parse_tile, run_chunk
 from argus_atlas.cli import app
 from argus_atlas.gdal_ops import gdalinfo_json
+from argus_atlas.jobs import load_sidecar, save_sidecar
 from argus_atlas.labels import LABELS_NAME
 from argus_atlas.mercator import tiles_covering
 from argus_atlas.models import Recipe
@@ -115,3 +116,33 @@ def test_mosaic_pmtiles_and_cli(style: Path, tmp_path: Path) -> None:
     empty.mkdir()
     nothing = runner.invoke(app, ["mosaic", str(empty), "--out", str(tmp_path / "x")])
     assert nothing.exit_code == 1 and "no baked chunks" in nothing.output
+
+
+@requires_gdal
+def test_mosaic_refuses_a_second_recipe_a_changed_archive_and_a_file_out(style: Path, tmp_path: Path) -> None:
+    job_a, job_b = (style / chunk_job_id("antique", *parse_tile(t)) for t in (A, B))
+    flat = tmp_path / "flat"
+    flat.write_text("mine")
+    with pytest.raises(MosaicError, match="not a directory"):
+        mosaic(style, flat)
+    assert flat.read_text() == "mine"
+
+    sidecar = load_sidecar(job_b)
+    assert sidecar.recipe is not None and sidecar.bake is not None
+    sidecar.recipe = sidecar.recipe.model_copy(
+        update={"recipe": sidecar.recipe.recipe.model_copy(update={"name": "inked"})}
+    )
+    rebaked = sidecar.model_copy(
+        update={"bake": sidecar.bake.model_copy(update={"params": sidecar.bake.params.model_copy()})}
+    )
+    save_sidecar(job_b, rebaked)
+    assert [d for d, _ in style_chunks(style)] == [job_a], "a chunk re-baked with other params is skipped"
+    rebaked.bake.params.recipe = "inked"
+    save_sidecar(job_b, rebaked)
+    with pytest.raises(MosaicError, match="more than one recipe"):
+        style_chunks(style)
+
+    with (job_a / "fantasy.pmtiles").open("ab") as f:
+        f.write(b"\0")
+    with pytest.raises(MosaicError, match="changed since its job.json"):
+        style_chunks(style)

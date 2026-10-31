@@ -4,6 +4,8 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 
 ## [Unreleased]
 
+## [0.3.0a1] - 2026-10-31
+
 ### Added
 
 - `labels`: place names as a vector overlay on the drape (#14). It reads a local places file (Natural Earth populated places, ranked by `SCALERANK`; an OSM `.osm`/`.pbf` or `places` extract, ranked by `place` class), keeps the named points inside the box that survive at the zoom, and writes EPSG:4326 GeoJSON with `name`, `rank` and `kind`, plus `labels.json` with the source SHA256, cutoff and ogr2ogr argv. `--job` labels a job's canvas (a chunk's tile) at its native zoom and records `labels` in `job.json` (sidecar schema `atlas_version` 0.3, additive). Names never enter the model, the GeoTIFF or the PMTiles.

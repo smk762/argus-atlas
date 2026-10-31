@@ -63,8 +63,15 @@ def tile_key(lat: int, lon: int) -> str:
 
 def tiles_for(bbox: BBox) -> list[str]:
     """Keys of every tile the bbox touches, north to south, west to east."""
-    lats = range(math.floor(bbox.south), math.ceil(bbox.north))
-    lons = range(math.floor(bbox.west), math.ceil(bbox.east))
+    return _tile_keys(*bbox.as_list())
+
+
+def _tile_keys(west: float, south: float, east: float, north: float) -> list[str]:
+    """:func:`tiles_for` on raw bounds, clamped to the globe: a window grown past the antimeridian, the
+    poles or the Web Mercator latitude cap (which :class:`BBox` refuses) still names only real tiles."""
+    west, south, east, north = max(west, -180.0), max(south, -90.0), min(east, 180.0), min(north, 90.0)
+    lats = range(math.floor(south), math.ceil(north))
+    lons = range(math.floor(west), math.ceil(east))
     return [tile_key(lat, lon) for lat in reversed(lats) for lon in lons]
 
 
@@ -125,21 +132,20 @@ def _lattice(location: str) -> tuple[tuple[float, float], tuple[float, float]]:
     return (gt[0], gt[3]), (gt[1], -gt[5])
 
 
-def _check_count(bbox: BBox, keys: list[str], max_tiles: int) -> None:
+def _check_count(what: str, keys: list[str], max_tiles: int) -> None:
     if len(keys) > max_tiles:
-        raise AtlasError(
-            f"bbox {bbox.as_text()} touches {len(keys)} DEM tiles; the cap is {max_tiles} (raise it with --max-tiles)"
-        )
+        raise AtlasError(f"{what} touches {len(keys)} DEM tiles; the cap is {max_tiles} (raise it with --max-tiles)")
 
 
 def _check_present(
-    source: str, keys: list[str], allow_missing: bool, *, known: frozenset[str] = frozenset()
+    source: str, keys: list[str], allow_missing: bool, *, known: dict[str, bool] | None = None
 ) -> tuple[list[str], list[str]]:
     """``(present, missing)`` keys, or AtlasError naming the missing ones when they may not be filled.
 
-    *known* are keys already found present, so they are not asked about again.
+    *known* maps keys already asked about to whether they exist, so they are not asked again.
     """
-    present = [k for k in keys if k in known or tile_exists(source, k)]
+    known = known or {}
+    present = [k for k in keys if (known[k] if k in known else tile_exists(source, k))]
     missing = [k for k in keys if k not in present]
     if missing and (not allow_missing or not present):
         where = f"under {source}" if not _is_url(source) else f"at {source}"
@@ -167,7 +173,7 @@ def fetch_dem(
     if out.suffix.lower() not in (".tif", ".tiff"):
         raise AtlasError(f"the DEM is written as GeoTIFF: {out} must end in .tif")
     keys = tiles_for(bbox)
-    _check_count(bbox, keys, max_tiles)
+    _check_count(f"bbox {bbox.as_text()}", keys, max_tiles)
     gdal_ops.require_gdal()
     logger.info("dem.tiles", source=source, tiles=keys)
     present, missing = _check_present(source, keys, allow_missing)
@@ -177,16 +183,13 @@ def fetch_dem(
     )
     if cover:
         bounds = snap_outward(bbox, origin, res)
-        xmin, ymin, xmax, ymax = bounds  # clamped: half a pixel past the antimeridian is not a tile
-        grown = tiles_for(
-            BBox(west=max(xmin, -180.0), south=max(ymin, -90.0), east=min(xmax, 180.0), north=min(ymax, 90.0))
-        )
+        grown = _tile_keys(*bounds)
         extra = [k for k in grown if k not in keys]
         if extra:
-            _check_count(bbox, grown, max_tiles)
+            _check_count(f"the window covering bbox {bbox.as_text()}", grown, max_tiles)
             logger.info("dem.cover_tiles", tiles=extra)
-            keys = grown
-            present, missing = _check_present(source, grown, allow_missing, known=frozenset(present))
+            known = dict.fromkeys(present, True) | dict.fromkeys(missing, False)
+            present, missing = _check_present(source, grown, allow_missing, known=known)
     else:
         bounds = snap_inward(bbox, origin, res)
     locations = [tile_location(source, k) for k in present]

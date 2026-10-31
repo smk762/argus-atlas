@@ -213,6 +213,15 @@ def test_cli_dem(mirror: Path, tmp_path: Path) -> None:
     assert missing.exit_code == 2 and dem.tile_key(45, 12) in missing.output
     both = runner.invoke(app, ["dem", "--bbox", "10.2,45.3,10.6,45.7", "--tile", "10/541/367", "--out", str(out)])
     assert both.exit_code == 2 and "exactly one of --bbox or --tile" in both.output
+    stray = runner.invoke(app, ["dem", "--bbox", "10.2,45.3,10.6,45.7", "--size", "512", "--out", str(out)])
+    assert stray.exit_code == 2 and "only apply to --tile" in stray.output
+
+
+def test_cover_tiles_clamp_past_the_mercator_cap() -> None:
+    # dem --tile z/x/0: the canvas stops at the Web Mercator cap and the outward snap goes past it,
+    # where BBox would refuse the window; the tile keys are still those of the real tiles.
+    assert dem._tile_keys(10.15, 85.0168, 10.59, 85.05125) == [dem.tile_key(85, 10)]
+    assert dem._tile_keys(-180.0001, -0.0001, -179.5, 0.5) == [dem.tile_key(0, -180), dem.tile_key(-1, -180)]
 
 
 def test_server_has_no_dem_route() -> None:

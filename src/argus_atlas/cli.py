@@ -195,8 +195,8 @@ def dem(
         "-t",
         help="Instead of --bbox: the canvas of chunk z/x/y (with --size/--margin); implies --cover",
     ),
-    size: int = Option(1024, "--size", help="With --tile: the chunk's tile side in px, as for `chunk`"),
-    margin: int = Option(128, "--margin", help="With --tile: the chunk's margin in px, as for `chunk`"),
+    size: int | None = Option(None, "--size", help="With --tile: the chunk's tile side in px, as for `chunk` (1024)"),
+    margin: int | None = Option(None, "--margin", help="With --tile: the chunk's margin in px, as for `chunk` (128)"),
     out: Path = Option(..., "--out", "-o", help="GeoTIFF to write (provenance in <out>.json beside it)"),
     source: str | None = Option(
         None, "--source", help="GLO-30 bucket URL, mirror or local dir of <key>/<key>.tif (default $ATLAS_DEM_SOURCE)"
@@ -211,13 +211,21 @@ def dem(
 ) -> None:
     """Clip Copernicus GLO-30 to an AOI into one GeoTIFF for `controls --dem`. Needs the network (or a mirror)."""
     from argus_atlas import gdal_ops
-    from argus_atlas.chunks import canvas_bbox, parse_tile
+    from argus_atlas.chunks import DEFAULT_CHUNK_SIZE, DEFAULT_MARGIN, canvas_bbox, parse_tile
     from argus_atlas.dem import ATTRIBUTION, DemSourceError, fetch_dem
 
     if (bbox is None) == (tile is None):
         _fail("give exactly one of --bbox or --tile", EXIT_INPUT)
+    if tile is None and (size is not None or margin is not None):
+        _fail("--size and --margin only apply to --tile", EXIT_INPUT)
     try:
-        aoi = BBox.parse(bbox) if bbox is not None else canvas_bbox(*parse_tile(tile), size=size, margin=margin)
+        if tile is not None:
+            z, x, y = parse_tile(tile)
+            size = DEFAULT_CHUNK_SIZE if size is None else size
+            margin = DEFAULT_MARGIN if margin is None else margin
+            aoi = canvas_bbox(z, x, y, size=size, margin=margin)
+        else:
+            aoi = BBox.parse(bbox)
         manifest = fetch_dem(
             aoi,
             out,

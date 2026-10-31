@@ -48,6 +48,8 @@ LogSink = Callable[[str], None]
 # island (all-touched), cheap for a block of hundreds of chunks.
 LAND_PX = 8
 MAX_RINGS = 16
+# The most chunks one block may hold: the square --rings MAX_RINGS makes, for --bbox too.
+MAX_BLOCK_TILES = (2 * MAX_RINGS + 1) ** 2
 INPUTS_DIR = ".block"
 
 
@@ -68,8 +70,11 @@ def ring_tiles(z: int, x: int, y: int, rings: int) -> list[Tile]:
 
 
 def bbox_tiles(bbox: BBox, z: int) -> list[Tile]:
-    """Every tile at zoom *z* that the lon/lat box touches."""
+    """Every tile at zoom *z* that the lon/lat box touches (at most :data:`MAX_BLOCK_TILES`)."""
     x0, y0, x1, y1 = tiles_covering(bbox_to_mercator(bbox), z)
+    count = (x1 - x0 + 1) * (y1 - y0 + 1)
+    if count > MAX_BLOCK_TILES:
+        raise AtlasError(f"the bbox touches {count} tiles at zoom {z}, over the {MAX_BLOCK_TILES}-chunk block limit")
     return [(z, x, y) for y in range(y0, y1 + 1) for x in range(x0, x1 + 1)]
 
 
@@ -184,7 +189,7 @@ def plan_block(
     z = tiles[0][0] if tiles else 0
     validate_chunk(z, size, margin)
     ordered, bbox = block(tiles, size=size, margin=margin)
-    kept = land_tiles(ordered, land, work_dir=None) if land is not None else ordered
+    kept = land_tiles(ordered, land.expanduser()) if land is not None else ordered
     name = recipe.recipe.name
     done = [t for t in kept if chunk_done(out_dir / chunk_job_id(name, *t), recipe, size=size, margin=margin)]
     return BlockPlan(
@@ -207,6 +212,22 @@ def _manifest(path: Path) -> dict | None:
         return None
 
 
+def _covering(previous: dict, bbox: BBox) -> BBox | None:
+    """A fetch manifest's requested box if it contains *bbox* (a sub-block reuses a bigger fetch), else None."""
+    try:
+        have = BBox.parse(previous["bbox"])
+    except (KeyError, TypeError, AttributeError, AtlasError):
+        return None
+    eps = 1e-6  # manifests record the box to 6 decimals (BBox.as_text)
+    inside = (
+        have.west - eps <= bbox.west
+        and have.south - eps <= bbox.south
+        and have.east + eps >= bbox.east
+        and have.north + eps >= bbox.north
+    )
+    return have if inside else None
+
+
 def block_dem(
     bbox: BBox,
     inputs: Path,
@@ -216,12 +237,12 @@ def block_dem(
     max_tiles: int | None = None,
     log: LogSink | None = None,
 ) -> Path:
-    """``<inputs>/dem.tif`` covering *bbox*: reused while its manifest names the same box, else fetched."""
+    """``<inputs>/dem.tif`` covering *bbox*: reused while its manifest's box contains it, else fetched."""
     from argus_atlas.dem import MAX_TILES, fetch_dem
 
     out = inputs / "dem.tif"
     previous = _manifest(out.with_suffix(".json"))
-    if out.is_file() and previous and previous.get("bbox") == bbox.as_text() and previous.get("snap") == "outward":
+    if out.is_file() and previous and previous.get("snap") == "outward" and _covering(previous, bbox):
         if log:
             log(f"dem: reusing {out}")
         return out
@@ -239,20 +260,26 @@ def block_dem(
 
 
 def block_osm(bbox: BBox, inputs: Path, layers: list[str], zoom: int, *, url: str, log: LogSink | None = None) -> dict:
-    """``<inputs>/osm``: one Overpass call for the block, reused while its manifest covers the same request."""
+    """``<inputs>/osm``: one Overpass call for the block, reused while its manifest covers the request.
+
+    A refetch for a missing layer keeps the previous fetch's box (when it contains *bbox*) and
+    its layers, so runs that share the inputs dir with different ``--osm-layers`` or a smaller
+    block do not evict each other's inputs.
+    """
     from argus_atlas.osm import fetch_osm
 
     out = inputs / "osm"
     previous = _manifest(out / "osm.json")
-    if (
-        previous
-        and previous.get("bbox") == bbox.as_text()
-        and previous.get("zoom") == zoom
-        and set(layers) <= set(previous.get("layers", {})) | set(previous.get("skipped", []))
-    ):
-        if log:
-            log(f"osm: reusing {out}")
-        return previous
+    covering = _covering(previous, bbox) if previous and previous.get("zoom") == zoom else None
+    if previous and covering is not None:
+        written = previous.get("layers") or {}
+        skipped = previous.get("skipped") or []
+        have = {n for n, rec in written.items() if (out / rec.get("path", "")).is_file()}
+        if set(layers) <= have | set(skipped):
+            if log:
+                log(f"osm: reusing {out}")
+            return previous
+        bbox, layers = covering, list(dict.fromkeys([*layers, *written, *skipped]))
     if log:
         log(f"osm: fetching {', '.join(layers)} at zoom {zoom}")
     return fetch_osm(bbox, out, layers, zoom, url=url)
@@ -263,7 +290,7 @@ def run_block(
     recipe: RecipeRecord,
     out_dir: Path,
     *,
-    dem: Path,
+    dem: Path | None,
     layers: dict[str, Path] | None = None,
     places: Path | None = None,
     sea_level: float | None = None,
@@ -276,20 +303,24 @@ def run_block(
     """Bake the plan's chunks in order, skipping the done ones; label each with *places* when given.
 
     Stops at the first failure: later chunks would seam against a gap. A re-run resumes.
+    Done chunks are skipped with *controls_only* too: rebuilding their controls would
+    replace the sidecar that publishes their crop to the neighbours.
     """
     from argus_atlas.chunks import parse_tile, run_chunk
     from argus_atlas.labels import label_job
 
+    todo = plan.todo
+    if todo and dem is None:
+        raise AtlasError("baking a block needs a DEM")
     out_dir.mkdir(parents=True, exist_ok=True)
     baked = []
-    todo = plan.tiles if controls_only else plan.todo
     for i, text in enumerate(todo, 1):
         z, x, y = parse_tile(text)
         job_dir = out_dir / chunk_job_id(recipe.recipe.name, z, x, y)
         if log:
             log(f"[{i}/{len(todo)}] {text} -> {job_dir.name}")
         sidecar = run_chunk(
-            dem,
+            dem,  # type: ignore[arg-type] - checked above
             text,
             recipe,
             job_dir,

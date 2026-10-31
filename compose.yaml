@@ -4,6 +4,7 @@
 #   docker compose run --rm atlas doctor                  # any CLI command: `atlas` is argus-atlas
 #   docker compose up -d serve                            # the API on 127.0.0.1:8105
 #   docker compose --profile test run --rm test           # the suite against real GDAL
+#   docker compose build                                  # after a pull: run/up never rebuild an existing image
 #
 # ComfyUI is not managed here: it runs on the GPU host and is reached by URL. argus-studio
 # deploys atlas through its own compose (`--profile atlas`); this file is for operators and dev.
@@ -22,20 +23,31 @@ x-atlas: &atlas
     - host.docker.internal:host-gateway
   environment:
     HOME: /tmp
-    ATLAS_BACKEND: ${ATLAS_BACKEND:-comfyui}
-    COMFYUI_BASE_URL: ${COMFYUI_BASE_URL:-http://host.docker.internal:8188}
+    # Unset or empty means argus_atlas.config's default (comfyui, host.docker.internal:8188, ...).
+    ATLAS_BACKEND: ${ATLAS_BACKEND:-}
+    COMFYUI_BASE_URL: ${COMFYUI_BASE_URL:-}
     ATLAS_WORKFLOW: ${ATLAS_WORKFLOW:-}  # a container path, e.g. under /data/models
     ATLAS_ALLOW_BAKE: ${ATLAS_ALLOW_BAKE:-}
     ATLAS_ALLOW_OSM: ${ATLAS_ALLOW_OSM:-}
-    ATLAS_CORS_ORIGINS: ${ATLAS_CORS_ORIGINS:-http://localhost:3000}
+    ATLAS_CORS_ORIGINS: ${ATLAS_CORS_ORIGINS:-}
     ATLAS_DEM_SOURCE: ${ATLAS_DEM_SOURCE:-}
     ATLAS_OVERPASS_URL: ${ATLAS_OVERPASS_URL:-}
     ATLAS_RECIPES_DIR: /data/recipes
+  # Long syntax with create_host_path: false, so a mistyped *_HOST path fails the run instead of
+  # docker creating an empty root-owned directory that the container (your uid) cannot write.
   volumes:
-    - ${ATLAS_DEM_HOST:-./data/dem}:/data/dem
-    - ${ATLAS_RECIPES_HOST:-./examples/recipes}:/data/recipes:ro
-    - ${ATLAS_MODELS_HOST:-./data/models}:/data/models:ro
-    - ${ATLAS_JOBS_HOST:-./data/jobs}:/data/out/atlas
+    - {type: bind, source: "${ATLAS_DEM_HOST:-./data/dem}", target: /data/dem, bind: {create_host_path: false}}
+    - type: bind
+      source: "${ATLAS_RECIPES_HOST:-./examples/recipes}"
+      target: /data/recipes
+      read_only: true
+      bind: {create_host_path: false}
+    - type: bind
+      source: "${ATLAS_MODELS_HOST:-./data/models}"
+      target: /data/models
+      read_only: true
+      bind: {create_host_path: false}
+    - {type: bind, source: "${ATLAS_JOBS_HOST:-./data/jobs}", target: /data/out/atlas, bind: {create_host_path: false}}
 
 services:
   atlas:

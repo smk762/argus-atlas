@@ -317,9 +317,10 @@ docker compose run --rm atlas doctor
 docker compose run --rm atlas dem --bbox 10.60,45.44,10.76,45.60 --out /data/dem/garda.tif
 docker compose run --rm atlas controls --dem /data/dem/garda.tif --bbox 10.60,45.44,10.76,45.60 --out /data/out/atlas/sample
 docker compose up -d serve    # the API on 127.0.0.1:8105 (ATLAS_BIND, ATLAS_PORT)
+docker compose build          # after pulling: `run` and `up` reuse an existing image
 ```
 
-`atlas` is `argus-atlas` in a one-shot container, so any command works after it. Paths on its command line are container paths. The host directories in `ATLAS_DEM_HOST`, `ATLAS_RECIPES_HOST`, `ATLAS_MODELS_HOST` and `ATLAS_JOBS_HOST` (default `./data/{dem,models,jobs}` and `examples/recipes`) are mounted at `/data/dem`, `/data/recipes`, `/data/models` and `/data/out/atlas`, and the bundled `examples/` are in the working directory. The container runs as your uid, so job files are yours, and reaches a ComfyUI on the host at `host.docker.internal:8188`. ComfyUI itself is not part of this file, and baking stays off until `ATLAS_ALLOW_BAKE=1`. argus-studio deploys atlas through its own compose; this one is for operators and development.
+`atlas` is `argus-atlas` in a one-shot container, so any command works after it. Paths on its command line are container paths. The host directories in `ATLAS_DEM_HOST`, `ATLAS_RECIPES_HOST`, `ATLAS_MODELS_HOST` and `ATLAS_JOBS_HOST` (default `./data/{dem,models,jobs}` and `examples/recipes`) are mounted at `/data/dem`, `/data/recipes`, `/data/models` and `/data/out/atlas`, and the bundled `examples/` are in the working directory (`/app`, read-only to your uid, so write outputs under `/data/...`, not to relative paths). The container runs as your uid, so job files are yours, and reaches a ComfyUI on the host at `host.docker.internal:8188`. ComfyUI itself is not part of this file, and baking stays off until `ATLAS_ALLOW_BAKE=1`. argus-studio deploys atlas through its own compose; this one is for operators and development.
 
 ## Develop
 

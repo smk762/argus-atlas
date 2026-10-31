@@ -349,7 +349,7 @@ docker compose build          # after pulling: `run` and `up` reuse an existing 
 ## Develop
 
 ```bash
-make install   # venv + editable install with the "dev,server,cli,tiles" extras
+make install   # uv sync --locked: editable install from uv.lock with all extras
 make test
 make lint
 docker compose --profile test run --rm test   # the suite against real GDAL, no host install

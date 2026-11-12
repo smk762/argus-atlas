@@ -13,6 +13,16 @@ argus-quarry -> argus-curator -> argus-lens -> argus-forge -> trainer -> argus-p
 
 v0 bakes **one** Web Mercator canvas (long side <= 1536 px, both sides multiples of 64) from a caller-supplied DEM + AOI, or one **chunk**: an XYZ tile plus a margin, continuing the chunks of the same recipe already baked around it. No worldwide pyramid (`mosaic` joins one style's chunks, nothing more), no DEM download on the server (the `dem` CLI command fetches Copernicus GLO-30), no game (claims, PostGIS, Leaflet, GeoServer are out of scope; the game demo is its own repo and wraps `argus-atlas chunk`). Studio stays a thin shell; no bake logic lives there.
 
+## Argus suite
+<!-- argus-suite: keep this block; argus-ci checks for it -->
+This repo is part of the Argus suite. The suite map below lists every sibling and what it owns; check it before
+building something a sibling may already do. **On every release, update this repo's row and capabilities in
+argus-cortex's SUITE.md** (a PR to argus-cortex in the same release).
+
+@../argus-core/SUITE.md
+
+Not checked out? Read https://github.com/smk762/argus-cortex/blob/main/SUITE.md
+
 ## Layout
 
 `src/argus_atlas/`:

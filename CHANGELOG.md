@@ -4,7 +4,7 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 
 ## [Unreleased]
 
-## [0.3.0rc1] - 2026-11-13
+## [0.3.0] - 2026-11-13
 
 ### Added
 

@@ -256,7 +256,7 @@ Port 8105, a peer of the other suite servers. CORS from `ATLAS_CORS_ORIGINS`, de
 
 | Method and path | Purpose |
 |---|---|
-| `GET /health` | status, service, version, read-only flag, `osm_allowed`, GDAL version |
+| `GET /health` | status, service, version, read-only flag, `osm_allowed`, `delete_allowed`, GDAL version |
 | `GET /doctor` | GDAL version, ComfyUI reachability, bake-allowed flag |
 | `GET /presets` | the style presets `POST /bake/stream` accepts by name |
 | `GET /inputs` | what `POST /controls` may name: DEMs, vector files and OSM extracts under `ATLAS_DEM_DIR` |
@@ -269,6 +269,8 @@ Port 8105, a peer of the other suite servers. CORS from `ATLAS_CORS_ORIGINS`, de
 | `GET /jobs/{id}/preview/{kind}` | `fantasy`, or any control the job has (`hillshade`, `slope`, `composite`, `land`, `sea`, a layer name, `seam_init`, `seam_mask`, …). Any other kind is a 400. Ids only, no path input |
 | `GET /jobs/{id}/archive` | the PMTiles bytes |
 | `GET /jobs/{id}/labels` | the place-name GeoJSON written by `labels --job`. Read-only: the CLI builds it |
+| `POST /purge/{id}` | `{"confirm": "purge"}`: delete one job and its whole directory. 403 unless `ATLAS_ALLOW_DELETE=1`, 409 while it is baking or tiling |
+| `POST /purge` | `{"confirm": "purge"}`: delete every job that is not busy; returns `deleted` and `skipped` ids. Same flag |
 
 `POST /controls` takes `dem` and `bbox` (`[w, s, e, n]` or `"w,s,e,n"`), and optionally `land`, `layers` (`{name: vector name under ATLAS_DEM_DIR}`), `sea_level`, `composite` (default `true`), `resampling`, `long_side` or `resolution`, `job_id`, `z_factor` (default `"auto"`) and `vertical_exaggeration` (default 1; see [`docs/relief.md`](https://github.com/smk762/argus-atlas/blob/main/docs/relief.md)).
 
@@ -281,6 +283,7 @@ Progress events on the bake stream, in order: `controls`, `generate`, `georefere
 | `ATLAS_DEM_SOURCE` | `https://copernicus-dem-30m.s3.amazonaws.com` | Where the `dem` command finds GLO-30 tiles (a mirror URL or a local dir) |
 | `ATLAS_ALLOW_BAKE` | unset | `1` enables `POST /bake/stream` |
 | `ATLAS_ALLOW_OSM` | unset | `1` enables `POST /osm` (reported as `osm_allowed` by `/health`) |
+| `ATLAS_ALLOW_DELETE` | unset | `1` enables `POST /purge` and `POST /purge/{id}` (dev mode; reported as `delete_allowed` by `/health`) |
 | `ATLAS_OVERPASS_URL` | `https://overpass-api.de/api/interpreter` | Overpass endpoint for `osm`, `chunks` and `POST /osm` |
 | `ATLAS_RECIPES_DIR` | `/data/recipes` | Where `--recipe <name>` finds `<name>.json` |
 | `ATLAS_BACKEND` | `comfyui` | Backend key |

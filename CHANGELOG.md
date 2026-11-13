@@ -4,6 +4,11 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 
 ## [Unreleased]
 
+### Changed
+
+- Docs cleanup: `docs/first-bake.md` is replaced by `docs/your-first-bake.md`, a first bake on a GPU host written against the `.env` placeholders, and `docs/styles.md`, what the sweeps showed about denoise, prompts, checkpoints, the composite, the presets and chunk seams. `.env.example` and `scripts/fetch_civitai_lora.py` use placeholders for host paths.
+- README: the hero is the Cook Strait chunk mosaic the Realms demo shows, in two styles; "Live demo" links [Realms](https://realms.dragonhound.dev) and [Argus Studio](https://studio.dragonhound.dev/atlas/); every image and doc link is an absolute GitHub URL so the PyPI page renders them; the links to agent and planning files are gone.
+
 ## [0.3.0a1] - 2026-10-31
 
 ### Added
@@ -84,7 +89,7 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 - `controls --sea-level <m>`: a `sea` mask of DEM cells at or below a level (Copernicus GLO-30 puts the sea at 0), painted as water in the composite — OSM has no ocean polygons.
 - Workflow templates may use any control as a `$<name>` placeholder; the packaged `comfyui_sdxl_img2img_composite_nolora.json` uses `$composite` as the img2img init and `$hillshade` for the ControlNet.
 - ComfyUI backend fails fast when a queued prompt disappears from both `/queue` and `/history` (ComfyUI restarted mid-bake) instead of waiting out the bake timeout.
-- `docs/first-bake.md`: the morpheus runbook, amended with the first real bake (Lake Garda, Copernicus GLO-30), LoRA, prompt, checkpoint and denoise sweeps, and contact sheets under `docs/img/`.
+- `docs/first-bake.md`: the GPU-host runbook, amended with the first real bake (Lake Garda, Copernicus GLO-30), LoRA, prompt, checkpoint and denoise sweeps, and contact sheets under `docs/img/`.
 
 ### Fixed
 

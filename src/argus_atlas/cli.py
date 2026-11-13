@@ -57,6 +57,31 @@ def _job_dir_of(path: Path) -> Path:
     return path if path.is_dir() else path.parent
 
 
+Z_FACTOR_HELP = (
+    "Height scale for hillshade and slope: 'auto' corrects Web Mercator's 1/cos(latitude) stretch at the "
+    "canvas centre; a number is used as is ('off' = 1, the uncorrected relief before 0.3.0)"
+)
+VE_HELP = "Vertical exaggeration on top of --z-factor: final z = z factor x this"
+
+
+def _parse_z_factor(text: str | None) -> str | float | None:
+    """``auto``, ``off`` (1), or a positive number."""
+    if text is None:
+        return None
+    value = text.strip().lower()
+    if value == "auto":
+        return "auto"
+    if value == "off":
+        return 1.0
+    try:
+        number = float(value)
+    except ValueError:
+        number = float("nan")
+    if not (number > 0 and number != float("inf")):
+        raise AtlasError(f"--z-factor must be 'auto', 'off' or a positive number, got {text!r}")
+    return number
+
+
 def _parse_layers(items: list[str]) -> dict[str, Path]:
     """``--layer name=path`` options -> ``{name: path}``."""
     layers: dict[str, Path] = {}
@@ -155,6 +180,8 @@ def controls(
         None, "--long-side", help="Canvas long side in px (default 1024, cap 1536, multiple of 64)"
     ),
     resolution: float | None = Option(None, "--resolution", help="Explicit metres per pixel instead of --long-side"),
+    z_factor: str = Option("auto", "--z-factor", help=Z_FACTOR_HELP),
+    vertical_exaggeration: float = Option(1.0, "--vertical-exaggeration", "--ve", min=0.0, help=VE_HELP),
 ) -> None:
     """Warp the DEM to EPSG:3857, write hillshade/slope(/layers/composite) controls and job.json. No GPU."""
     from argus_atlas.controls import build_controls
@@ -173,6 +200,8 @@ def controls(
             resampling=resampling,
             long_side=long_side,
             resolution=resolution,
+            z_factor=_parse_z_factor(z_factor),
+            vertical_exaggeration=vertical_exaggeration,
         )
     except AtlasError as exc:
         _fail(str(exc), EXIT_INPUT)
@@ -183,6 +212,11 @@ def controls(
     )
     for kind, ref in sidecar.controls.items():
         typer.echo(f"  {kind:<10}{out / ref.path}  {ref.sha256[:12]}…")
+    if sidecar.relief is not None:
+        r = sidecar.relief
+        typer.echo(
+            f"  relief    z {r.z_factor:.3f} ({r.mode} {r.base:.3f} at {r.latitude:.2f}°, x{r.vertical_exaggeration:g})"
+        )
     typer.echo(f"  sidecar   {out / 'job.json'}")
 
 
@@ -430,6 +464,10 @@ def chunk(
     ),
     models_dir: Path | None = Option(None, "--models-dir", help="Default $ATLAS_MODELS_DIR"),
     comfyui_url: str | None = Option(None, "--comfyui-url", help="Default $COMFYUI_BASE_URL"),
+    z_factor: str | None = Option(None, "--z-factor", help=Z_FACTOR_HELP + "; default: the recipe's (auto)"),
+    vertical_exaggeration: float | None = Option(
+        None, "--vertical-exaggeration", "--ve", min=0.0, help=VE_HELP + "; default: the recipe's (1)"
+    ),
 ) -> None:
     """One chunk end to end: controls -> seams from baked neighbours -> bake -> blend -> crop -> tiles, by a recipe."""
     if not controls_only and not config.bake_allowed():
@@ -439,7 +477,7 @@ def chunk(
     from argus_atlas.chunks import chunk_job_id, parse_tile, run_chunk, validate_chunk, validate_seams
     from argus_atlas.controls import check_inputs
     from argus_atlas.jobs import require_safe_id
-    from argus_atlas.recipes import load_recipe, recipe_record, recipe_workflow
+    from argus_atlas.recipes import load_recipe, recipe_record, recipe_workflow, with_relief
 
     # The inputs first, before anything is written: a mistake in them is EXIT_INPUT whatever the job
     # dir already holds, and anything run_chunk raises after that is a runtime failure.
@@ -448,6 +486,7 @@ def chunk(
         validate_chunk(z, size, margin)
         validate_seams(size, margin, mask_feather=mask_feather, feather=feather)
         loaded, recipe_path = load_recipe(recipe, recipes_root=config.recipes_dir())
+        loaded = with_relief(loaded, _parse_z_factor(z_factor), vertical_exaggeration)
         workflow = None if controls_only else recipe_workflow(loaded, recipe_path)
         layers = _parse_layers(layer)
         check_inputs(dem, land, layers)
@@ -533,6 +572,10 @@ def chunks(
     ),
     models_dir: Path | None = Option(None, "--models-dir", help="Default $ATLAS_MODELS_DIR"),
     comfyui_url: str | None = Option(None, "--comfyui-url", help="Default $COMFYUI_BASE_URL"),
+    z_factor: str | None = Option(None, "--z-factor", help=Z_FACTOR_HELP + "; default: the recipe's (auto)"),
+    vertical_exaggeration: float | None = Option(
+        None, "--vertical-exaggeration", "--ve", min=0.0, help=VE_HELP + "; default: the recipe's (1)"
+    ),
 ) -> None:
     """A block of chunks: one DEM and OSM fetch, seam order, sea and finished chunks skipped. Re-run to resume."""
     if not (plan_only or controls_only) and not config.bake_allowed():
@@ -542,7 +585,7 @@ def chunks(
     from argus_atlas.chunks import parse_tile
     from argus_atlas.controls import validate_layer_name
     from argus_atlas.osm import LAYER_PRESETS
-    from argus_atlas.recipes import load_recipe, recipe_record, recipe_workflow
+    from argus_atlas.recipes import load_recipe, recipe_record, recipe_workflow, with_relief
 
     try:
         if (tile is None) == (bbox is None):
@@ -558,6 +601,7 @@ def chunks(
                 raise AtlasError("--bbox needs --zoom")
             tiles = bbox_tiles(BBox.parse(bbox), zoom)
         loaded, recipe_path = load_recipe(recipe, recipes_root=config.recipes_dir())
+        loaded = with_relief(loaded, _parse_z_factor(z_factor), vertical_exaggeration)
         record = recipe_record(loaded)
         workflow = None if (plan_only or controls_only) else recipe_workflow(loaded, recipe_path)
         names = [n.strip() for n in osm_layers.split(",") if n.strip()]

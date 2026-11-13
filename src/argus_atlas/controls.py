@@ -28,7 +28,14 @@ from argus_atlas import gdal_ops
 from argus_atlas.hashing import sha256_file
 from argus_atlas.jobs import require_safe_id, save_sidecar
 from argus_atlas.labels import kept_labels
-from argus_atlas.mercator import bbox_to_mercator, mercator_to_bbox, native_zoom, zoom_range
+from argus_atlas.mercator import (
+    bbox_to_mercator,
+    mercator_to_bbox,
+    mercator_to_lonlat,
+    native_zoom,
+    scale_factor,
+    zoom_range,
+)
 from argus_atlas.models import (
     ALIGN_TOLERANCE,
     COMPOSITE_KIND,
@@ -38,6 +45,7 @@ from argus_atlas.models import (
     RESERVED_CONTROL_KINDS,
     SEA_KIND,
     SIDE_MULTIPLE,
+    Z_FACTOR_AUTO,
     AtlasError,
     BBox,
     ChunkRecord,
@@ -45,6 +53,9 @@ from argus_atlas.models import (
     GdalCommand,
     Grid,
     JobSidecar,
+    ReliefRecord,
+    ZFactor,
+    check_z_factor,
 )
 from argus_atlas.png import png_size
 
@@ -173,6 +184,29 @@ def check_inputs(
     return dem, sources
 
 
+def resolve_relief(grid: Grid, z_factor: ZFactor = Z_FACTOR_AUTO, vertical_exaggeration: float = 1.0) -> ReliefRecord:
+    """The height scaling for a canvas: ``auto`` is 1/cos of the latitude at the grid's centre
+    (Web Mercator's stretch there), a number is used as is; *vertical_exaggeration* multiplies either."""
+    try:
+        z_factor = check_z_factor(z_factor)
+    except ValueError as exc:
+        raise AtlasError(str(exc)) from exc
+    if not (math.isfinite(vertical_exaggeration) and vertical_exaggeration > 0):
+        raise AtlasError(f"vertical exaggeration must be a positive number, got {vertical_exaggeration!r}")
+    _, lat = mercator_to_lonlat(
+        grid.ulx + grid.width * grid.pixel_width / 2, grid.uly + grid.height * grid.pixel_height / 2
+    )
+    auto = z_factor == Z_FACTOR_AUTO
+    base = scale_factor(lat) if auto else float(z_factor)
+    return ReliefRecord(
+        mode="auto" if auto else "fixed",
+        latitude=round(lat, 6),
+        base=base,
+        vertical_exaggeration=float(vertical_exaggeration),
+        z_factor=base * vertical_exaggeration,
+    )
+
+
 def build_controls(
     dem: Path,
     bbox: BBox,
@@ -188,6 +222,8 @@ def build_controls(
     grid: Grid | None = None,
     chunk: ChunkRecord | None = None,
     job_id: str | None = None,
+    z_factor: ZFactor = Z_FACTOR_AUTO,
+    vertical_exaggeration: float = 1.0,
 ) -> JobSidecar:
     """Warp the DEM, write hillshade/slope(/layer masks/composite) controls and ``job.json`` under *out_dir*.
 
@@ -204,6 +240,9 @@ def build_controls(
     *grid* skips :func:`plan_grid` for a canvas planned elsewhere — a chunk's
     tile plus margin (:func:`argus_atlas.chunks.chunk_grids`), recorded as *chunk*.
     A chunk's archive starts at its own zoom: coarser tiles would spill past the tile.
+
+    *z_factor* and *vertical_exaggeration* scale heights for hillshade and slope
+    (:func:`resolve_relief`); the default corrects for Web Mercator at the canvas centre.
     """
     started = time.perf_counter()
     if grid is not None and (long_side is not None or resolution is not None):
@@ -219,6 +258,7 @@ def build_controls(
 
     if grid is None:
         grid = plan_grid(bbox, long_side=long_side, resolution=resolution)
+    relief = resolve_relief(grid, z_factor, vertical_exaggeration)
     out_dir.mkdir(parents=True, exist_ok=True)
     commands: list[GdalCommand] = []
     logger.info("controls.plan", job_id=job_id, width=grid.width, height=grid.height, resolution=grid.resolution)
@@ -232,8 +272,9 @@ def build_controls(
 
     hill_tif, hill_png = (out_dir / n for n in CONTROL_FILES["hillshade"])
     slope_tif, slope_png = (out_dir / n for n in CONTROL_FILES["slope"])
-    commands.append(gdal_ops.run(gdal_ops.hillshade_argv(warped, hill_tif)))
-    commands.append(gdal_ops.run(gdal_ops.slope_argv(warped, slope_tif)))
+    logger.info("controls.relief", mode=relief.mode, latitude=relief.latitude, z_factor=round(relief.z_factor, 4))
+    commands.append(gdal_ops.run(gdal_ops.hillshade_argv(warped, hill_tif, z_factor=relief.z_factor)))
+    commands.append(gdal_ops.run(gdal_ops.slope_argv(warped, slope_tif, z_factor=relief.z_factor)))
     commands.append(gdal_ops.run(gdal_ops.to_png_argv(hill_tif, hill_png)))
     commands.append(gdal_ops.run(gdal_ops.to_png_argv(slope_tif, slope_png, scale=SLOPE_SCALE)))
 
@@ -293,6 +334,7 @@ def build_controls(
         commands=[*commands, *label_commands],
         chunk=chunk,
         labels=labels,
+        relief=relief,
         timings={"controls": round(time.perf_counter() - started, 3)},
     )
     save_sidecar(out_dir, sidecar)

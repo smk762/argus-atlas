@@ -39,19 +39,22 @@ except ImportError as exc:  # pragma: no cover
     raise ImportError("Server requires: pip install argus-atlas[server]") from exc
 
 from argus_cortex.server import WriteGuard
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from argus_atlas import __version__, config, gdal_ops
 from argus_atlas.backends.base import BackendError, BakeBackend
 from argus_atlas.jobs import JobStore, is_safe_id, new_job_id
 from argus_atlas.models import (
     DEFAULT_LORA_WEIGHT,
+    Z_FACTOR_AUTO,
     AtlasError,
     BakeParams,
     BBox,
     JobDigest,
     JobSidecar,
     TilesRecord,
+    ZFactor,
+    check_z_factor,
 )
 
 _BAKE_REFUSAL = "live baking is disabled on this host (set ATLAS_ALLOW_BAKE=1 to enable POST /bake/stream)"
@@ -94,6 +97,14 @@ class ControlsRequest(BaseModel):
     long_side: int | None = Field(default=None, gt=0)
     resolution: float | None = Field(default=None, gt=0)
     job_id: str | None = None
+    # "auto" corrects Web Mercator's stretch at the canvas centre; a number is used as is (1 = uncorrected).
+    z_factor: ZFactor = Z_FACTOR_AUTO
+    vertical_exaggeration: float = Field(default=1.0, gt=0, allow_inf_nan=False)
+
+    @field_validator("z_factor")
+    @classmethod
+    def _z_factor(cls, value: ZFactor) -> ZFactor:
+        return check_z_factor(value)
 
 
 class BakeStreamRequest(BaseModel):
@@ -357,6 +368,8 @@ def create_app(
                 long_side=request.long_side,
                 resolution=request.resolution,
                 job_id=job_id,
+                z_factor=request.z_factor,
+                vertical_exaggeration=request.vertical_exaggeration,
             )
         except AtlasError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

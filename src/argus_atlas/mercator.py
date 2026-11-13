@@ -26,6 +26,12 @@ def lonlat_to_mercator(lon: float, lat: float) -> tuple[float, float]:
     return x, y
 
 
+def scale_factor(lat: float) -> float:
+    """Web Mercator's horizontal stretch at *lat*: 1/cos(latitude), 1 at the equator."""
+    lat = max(-MAX_LATITUDE, min(MAX_LATITUDE, lat))
+    return 1.0 / math.cos(math.radians(lat))
+
+
 def mercator_to_lonlat(x: float, y: float) -> tuple[float, float]:
     """Unproject EPSG:3857 metres to EPSG:4326 degrees."""
     lon = math.degrees(x / EARTH_RADIUS)

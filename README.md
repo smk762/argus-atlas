@@ -13,7 +13,9 @@ Bake one georeferenced fantasy-map overlay from real terrain.
 
 Cook Strait, New Zealand: the Marlborough Sounds on the left, Wellington and the Wairarapa on the right, as the [Realms demo](https://realms.dragonhound.dev) shows it. Each style is a block of 1024 px z10 chunks (`argus-atlas chunks`, 128 px seam margin, native zoom 12, 38 m/px) from Copernicus GLO-30 and OpenStreetMap layers, mosaicked into one tile set (`argus-atlas mosaic`). Juggernaut XL, no LoRA, 30 steps, cfg 6: preset `antique` at denoise 0.6 (top) and `tolkien` at 0.7 (bottom), seeds derived from each recipe and tile. Every chunk passed the alignment gate twice, once for its canvas and once for its crop, so coastlines run on across the seams and sit on the real ones when the layer is draped over a basemap.
 
-**Status:** 0.x, pre-1.0: the CLI and `job.json` may still change between minor versions. Real AOIs pass the alignment gate, from single canvases (Lake Garda, October 2026) to blocks of seam-aware chunks (Cook Strait). [`docs/your-first-bake.md`](https://github.com/smk762/argus-atlas/blob/main/docs/your-first-bake.md) walks through a first bake on a GPU host; [`docs/styles.md`](https://github.com/smk762/argus-atlas/blob/main/docs/styles.md) covers the knobs that matter.
+**Status:** 0.x, pre-1.0: the CLI and `job.json` may still change between minor versions. Real AOIs pass the alignment gate, from single canvases (Lake Garda, October 2026) to blocks of seam-aware chunks (Cook Strait).
+
+**Docs:** [your first bake](https://github.com/smk762/argus-atlas/blob/main/docs/your-first-bake.md) on a GPU host · [styles](https://github.com/smk762/argus-atlas/blob/main/docs/styles.md) and the knobs that matter · [chunks, mosaics and place names](https://github.com/smk762/argus-atlas/blob/main/docs/chunks-and-mosaic.md) · [the alignment gate](https://github.com/smk762/argus-atlas/blob/main/docs/alignment-gate.md) · [relief and the z factor](https://github.com/smk762/argus-atlas/blob/main/docs/relief.md) · [data sources](https://github.com/smk762/argus-atlas/blob/main/docs/data-sources.md) · [CLI reference](https://github.com/smk762/argus-atlas/blob/main/docs/cli.md)
 
 Part of the [Argus suite](https://github.com/smk762?tab=repositories&q=argus).
 
@@ -55,58 +57,21 @@ Any OGR-readable file works as a layer, in any CRS; a name outside the palette i
 
 ## Presets and provenance
 
-`argus-atlas presets` lists six named styles (antique, imhof, tolkien, watercolor, cyberpunk, minecraft, plus pixel) and `bake --preset <name>` uses one; the API has `GET /presets` and takes `preset` on the bake request, so a demo can offer a fixed menu instead of free-text prompts. Every output carries the full request: the PNG in an EXIF `ImageDescription` and a text chunk, the GeoTIFF in `TIFFTAG_IMAGEDESCRIPTION`, the PMTiles archive in its metadata. `exiftool fantasy.png`, `gdalinfo fantasy.tif` or `argus_atlas.metadata.read_png_payload()` give it back, which is what makes a hundred bakes rankable later.
+`argus-atlas presets` lists seven named styles: six recommended (antique, imhof, tolkien, watercolor, minecraft, pixel) plus cyberpunk, kept but not recommended (see [`docs/styles.md`](https://github.com/smk762/argus-atlas/blob/main/docs/styles.md)). `bake --preset <name>` uses one; the API has `GET /presets` and takes `preset` on the bake request, so a demo can offer a fixed menu instead of free-text prompts. Every output carries the full request: the PNG in an EXIF `ImageDescription` and a text chunk, the GeoTIFF in `TIFFTAG_IMAGEDESCRIPTION`, the PMTiles archive in its metadata. `exiftool fantasy.png`, `gdalinfo fantasy.tif` or `argus_atlas.metadata.read_png_payload()` give it back, which is what makes a hundred bakes rankable later.
 
-## Chunks and style recipes
+## Chunks, mosaics and place names
 
-To grow a map piece by piece, bake it one XYZ tile at a time. `argus-atlas chunk --tile z/x/y --recipe <style> --dem <dem>` runs controls, seams, bake, crop and tiles in one go:
-
-- **The grid comes from the tile id.** A chunk is painted at 256, 512 or 1024 px, so its native zoom is z, z+1 or z+2 and every tile in its pyramid is a whole XYZ tile. All chunks of one size share one pixel lattice.
-- **Seams continue the neighbours.** The canvas is the tile plus a margin (default 128 px, a multiple of 32). Chunks already baked from the same recipe next to it (under `--neighbours`, by default the parent of the job dir) are pasted into the margin of a `seam_init` control. A `seam_mask` control marks those pixels as kept. The packaged `comfyui_sdxl_chunk_seam*.json` templates denoise only the unmasked area, so the model paints up to the tile edge while it sees the neighbour across it. A chunk job re-baked with `bake` or `POST /bake/stream` no longer counts as the recipe's, and a chunk of the recipe that would overlap one already baked (the same tile in another job dir, or another zoom over the same ground) is refused.
-- **Match, then crop.** The mask fades over 32 px on the neighbours' side (`--mask-feather`), so there is no hard latent edge. After the bake, the chunk's colours are shifted to match the neighbours along the seam (`--tone`), and what difference is left at the seam is faded out over 64 px into the tile (`--feather`). The painted `fantasy.tif` is kept as it came from the model; the crop comes from `fantasy_blend.tif`.
-- **Crop, then gate again.** After the alignment gate the margin is cut off (`fantasy_chunk.tif`) and the crop is gated against the tile's own grid. Only the crop is tiled, from zoom z to native, so the archives of neighbouring chunks never overlap.
-- **A recipe is a style you can repeat.** It is a JSON file (see [`examples/recipes/antique.json`](https://github.com/smk762/argus-atlas/blob/main/examples/recipes/antique.json)) naming a preset, checkpoint, optional LoRA, workflow and a seed scheme. With `tile` seeds, each chunk's seed is a hash of the recipe name, a base and z/x/y, so baking a chunk again gives the same image. `--recipe <name>` looks up `$ATLAS_RECIPES_DIR/<name>.json`. The whole recipe and its digest go into `job.json`.
-- **The workflow comes from the recipe.** `chunk` bakes with the recipe's `workflow` (unset: the packaged seam template matching its LoRA), never with `--workflow` or `ATLAS_WORKFLOW`, which name non-seam templates. Like the other packaged templates, the seam templates name the placeholder ControlNet `diffusers_xl_depth_full.safetensors`: on a host without it, copy one, edit its `ControlNetLoader` and set the recipe's `workflow` to the copy (a path relative to the recipe file).
-- **Every stage is timed.** `job.json` records wall-clock seconds for controls, seams, verify, generate, georeference, crop and tiles, so a bake queue can be sized from real runs.
-
-`--controls-only` stops after the seam controls and needs no GPU.
-
-### A block of chunks
-
-`argus-atlas chunks` bakes many chunks at once and handles the ordering for you:
+A map larger than one canvas is baked one XYZ tile at a time. `argus-atlas chunk --tile z/x/y --recipe <style>` paints a tile plus a margin, with the chunks of the same recipe already baked around it pasted into the margin, so the model continues their coastlines and colours across the seam. The margin is then cut off and the crop is gated against the tile's own grid. `argus-atlas chunks` bakes a whole block in seam order from one DEM and OSM fetch, skips all-sea chunks and resumes where it stopped. `argus-atlas mosaic` combines a style's chunks into one tile set, with overview zooms for zooming out. A **recipe** (a JSON file such as [`examples/recipes/antique.json`](https://github.com/smk762/argus-atlas/blob/main/examples/recipes/antique.json)) pins the preset, checkpoint, LoRA, workflow and a per-tile seed, so re-baking a chunk gives the same image.
 
 ```bash
 argus-atlas chunks --tile 10/1009/641 --rings 3 --recipe antique --out maps/antique \
   --sea-level 0 --allow-missing --land land.gpkg --labels --plan   # drop --plan to bake
+argus-atlas mosaic maps/antique --out maps/antique.pmtiles
 ```
 
-- **One fetch for the block.** The lon/lat box covering every chunk's canvas, margins included, is fetched once: the DEM with `dem --cover`, and the OSM control layers (`--osm-layers`, by default `water,rivers,roads,forest,urban`) at the chunks' native zoom. With `--labels` the fetch includes `places`, and every chunk is labelled afterwards. Both go to `--inputs` (by default `<out>/.block`) and are reused while their manifests cover the block (a smaller block inside a fetched one fetches nothing; a new layer refetches the same box with the old layers kept). Point a second recipe's run at the same `--inputs` and nothing is fetched twice. `--dem` uses your own DEM instead.
-- **Seam order.** Chunks are baked north to south, then west to east, so each one finds its west and north neighbours already baked.
-- **Sea skipping.** With `--land`, chunks whose own tile has no land under the polygon are skipped. `--land` is only a filter here; to burn it as a control too, pass `--layer land=<file>`.
-- **Resume.** A chunk that already has this recipe's gated crop and archive, at the same size and margin, is skipped. The first failure stops the run, because later chunks would seam against a gap. Re-run the same command to continue.
-- `--plan` prints the order, the sea chunks and the finished chunks without fetching or baking. `--bbox … --zoom z` picks the chunks by area instead of `--tile`/`--rings`.
+Place names never reach the model, which paints illegible lettering. `argus-atlas labels` writes them as a GeoJSON overlay from Natural Earth, a Geofabrik extract or the `places` layer of `argus-atlas osm`, ranked by zoom, and the viewer draws it on top in a real font.
 
-### One tile set for the region
-
-Each chunk has its own `fantasy.pmtiles`. `argus-atlas mosaic <style-dir> --out <dir | file.pmtiles>` combines every baked chunk of a style into one tile set a viewer can load:
-
-- Chunk tiles are copied unchanged. A tile that two archives both carry with different pixels is an error naming both jobs.
-- Overview zooms below the chunk zoom, down to `--overview-min` (default 5), are cut by `gdal2tiles` from a VRT of the chunks' gated crops, so the painted map stays visible when you zoom out. Gaps between chunks (skipped sea) stay transparent.
-- Every chunk's `labels.geojson` is merged into one, with a name at the same point kept once. It goes to `labels.geojson` in the directory, or `<stem>.labels.geojson` beside a `.pmtiles`.
-- `mosaic.json` (or `<stem>.json`) records the zoom range, bounds, tile count, each source chunk's job id, tile and archive SHA256, and the GDAL argv. Writing to a directory replaces an earlier mosaic there, and refuses a directory that holds anything else.
-
-## Place names
-
-The prompts forbid text, because diffusion paints illegible lettering and breaks tile seams, so the bake has no names. `argus-atlas labels` adds them as a vector overlay the viewer draws on top, in a real font. Names never reach the model, `fantasy.tif` or the PMTiles.
-
-```bash
-# Label a job: the box is its canvas (a chunk's tile), the cutoff its native zoom.
-argus-atlas labels --source ne_10m_populated_places.shp --job jobs/sample
-# Or any box, for use outside a job.
-argus-atlas labels --source places.osm.pbf --bbox 10.60,45.44,10.76,45.60 --zoom 13 --out labels.geojson
-```
-
-The source is a file you already have: Natural Earth populated places (ranked by `SCALERANK` <= zoom − 2), a Geofabrik `.osm.pbf` or `.osm` (by `place` class: cities from zoom 0, towns from 8, villages from 11, suburbs and hamlets from 13, the rest from 15), or the `places` layer of `argus-atlas osm`. Points outside the box or below the cutoff are dropped. The output has `name`, `rank` and `kind` per point, in EPSG:4326. `labels.json` beside it records the source and its SHA256, the cutoff and the ogr2ogr argv; with `--job`, `job.json` gains a `labels` record and `GET /jobs/{id}/labels` serves the file. No route builds labels. `examples/viewer.html` draws them over the raster, so they stay put while the opacity slider fades the bake. [`examples/sample_places.geojson`](https://github.com/smk762/argus-atlas/blob/main/examples/sample_places.geojson) labels the sample DEM.
+[`docs/chunks-and-mosaic.md`](https://github.com/smk762/argus-atlas/blob/main/docs/chunks-and-mosaic.md) covers seams, tone matching, recipes, block fetches, resuming, the mosaic and labels in full. That is how the Realms demo was made.
 
 ## Live demo
 
@@ -211,8 +176,9 @@ argus-atlas tiles ./jobs/aoi-1 --out ./jobs/aoi-1/fantasy.pmtiles
 # Print the sidecar: geotransform, canvas, hashes, GDAL argv, bake params.
 argus-atlas inspect ./jobs/aoi-1
 
-# Thin HTTP wrapper for argus-studio.
-argus-atlas serve --port 8105 --cors
+# Thin HTTP wrapper for argus-studio. --host defaults to 0.0.0.0;
+# --allow-bake overrides ATLAS_ALLOW_BAKE for this process.
+argus-atlas serve --host 127.0.0.1 --port 8105 --cors
 
 # Report GDAL version, ComfyUI reachability, and whether baking is allowed.
 argus-atlas doctor
@@ -271,7 +237,7 @@ Before a GeoTIFF or any tile is written, all of the following must hold:
 - SRS is EPSG:3857.
 - Corner coordinates match the sidecar within 1e-3 map units.
 
-On failure the PNG is kept, no GeoTIFF is written, and the command exits non-zero.
+On failure the PNG is kept, no GeoTIFF is written, and the command exits non-zero. `tiles` runs the gate again, and a chunk is gated twice more: once with its seam blend and once as the cropped tile. See [`docs/alignment-gate.md`](https://github.com/smk762/argus-atlas/blob/main/docs/alignment-gate.md).
 
 ## When it fails
 
@@ -279,9 +245,9 @@ The three failures new users hit, and what to do:
 
 | Message | Cause | Fix |
 |---|---|---|
-| `gdal not found` from `doctor` or `/health` | GDAL CLI is not on `PATH` | Install the system package or use the Docker image. |
+| `doctor` reports `MISSING — install gdal-bin …` on its `gdal:` line and exits with `GDAL is not installed; argus-atlas cannot run without it` | GDAL CLI is not on `PATH` | Install the system package or use the Docker image. |
 | `--resolution` too fine, largest `--bbox` that fits is printed | Bounding box is too large for the 1536 cap at that ground resolution | Use the `--bbox` the message gives you, or drop `--resolution` and let `--long-side` choose the resolution. |
-| `ComfyUI unreachable at ...` | Nothing listening on `COMFYUI_BASE_URL` | Start ComfyUI on the host, or pass `--comfyui-url`. Inside Compose the default reaches the host via `host.docker.internal`. |
+| `doctor` shows `backend: comfyui — unreachable (...)`; `bake` fails with `ComfyUI request to <url> failed: ...` | Nothing listening on `COMFYUI_BASE_URL` | Start ComfyUI on the host, or pass `--comfyui-url`. Inside Compose the default reaches the host via `host.docker.internal`. |
 | `bake` exits 3 | `ATLAS_ALLOW_BAKE` is not `1` | Set it on purpose. The default is read-only so a demo box cannot be made to spend GPU time. |
 
 ## HTTP API
@@ -290,16 +256,23 @@ Port 8105, a peer of the other suite servers. CORS from `ATLAS_CORS_ORIGINS`, de
 
 | Method and path | Purpose |
 |---|---|
-| `GET /health` | status, service, version, read-only flag, GDAL version |
+| `GET /health` | status, service, version, read-only flag, `osm_allowed`, `delete_allowed`, GDAL version |
 | `GET /doctor` | GDAL version, ComfyUI reachability, bake-allowed flag |
-| `POST /controls` | DEM name, bbox, optional land name → job id and sidecar. Names resolve under `ATLAS_DEM_DIR` only |
-| `POST /bake/stream` | NDJSON progress for an existing job. 403 when baking is disabled |
-| `POST /tiles` | job id → PMTiles, after the alignment gate has passed |
+| `GET /presets` | the style presets `POST /bake/stream` accepts by name |
+| `GET /inputs` | what `POST /controls` may name: DEMs, vector files and OSM extracts under `ATLAS_DEM_DIR` |
+| `POST /osm` | `name`, `bbox`, `zoom`, `layers` → OSM layers fetched into `ATLAS_DEM_DIR/osm/<name>/`. 403 unless `ATLAS_ALLOW_OSM=1` |
+| `POST /controls` | builds a job's controls → job id and sidecar. Body below. Names resolve under `ATLAS_DEM_DIR` only |
+| `POST /bake/stream` | NDJSON progress for an existing job: `job_id`, `checkpoint`, optional `lora`, `lora_weight`, `preset`, `prompt`, `negative`, `seed`, `steps`, `cfg`, `denoise`. 403 when baking is disabled |
+| `POST /tiles` | `job_id`, optional `min_zoom`/`max_zoom` → PMTiles, after the alignment gate passes again |
 | `GET /jobs` | job digests |
 | `GET /jobs/{id}` | sidecar and status |
-| `GET /jobs/{id}/preview/{kind}` | `hillshade`, `slope`, `land`, or `fantasy`. Ids only, no path input |
+| `GET /jobs/{id}/preview/{kind}` | `fantasy`, or any control the job has (`hillshade`, `slope`, `composite`, `land`, `sea`, a layer name, `seam_init`, `seam_mask`, …). Any other kind is a 400. Ids only, no path input |
 | `GET /jobs/{id}/archive` | the PMTiles bytes |
 | `GET /jobs/{id}/labels` | the place-name GeoJSON written by `labels --job`. Read-only: the CLI builds it |
+| `POST /purge/{id}` | `{"confirm": "purge"}`: delete one job and its whole directory. 403 unless `ATLAS_ALLOW_DELETE=1`, 409 while it is baking or tiling |
+| `POST /purge` | `{"confirm": "purge"}`: delete every job that is not busy; returns `deleted` and `skipped` ids. Same flag |
+
+`POST /controls` takes `dem` and `bbox` (`[w, s, e, n]` or `"w,s,e,n"`), and optionally `land`, `layers` (`{name: vector name under ATLAS_DEM_DIR}`), `sea_level`, `composite` (default `true`), `resampling`, `long_side` or `resolution`, `job_id`, `z_factor` (default `"auto"`) and `vertical_exaggeration` (default 1; see [`docs/relief.md`](https://github.com/smk762/argus-atlas/blob/main/docs/relief.md)).
 
 Progress events on the bake stream, in order: `controls`, `generate`, `georeference`, then `done` or `error`.
 
@@ -309,6 +282,10 @@ Progress events on the bake stream, in order: `controls`, `generate`, `georefere
 | `ATLAS_DEM_DIR` | `/data/dem` | Only DEMs under here can be named by the API |
 | `ATLAS_DEM_SOURCE` | `https://copernicus-dem-30m.s3.amazonaws.com` | Where the `dem` command finds GLO-30 tiles (a mirror URL or a local dir) |
 | `ATLAS_ALLOW_BAKE` | unset | `1` enables `POST /bake/stream` |
+| `ATLAS_ALLOW_OSM` | unset | `1` enables `POST /osm` (reported as `osm_allowed` by `/health`) |
+| `ATLAS_ALLOW_DELETE` | unset | `1` enables `POST /purge` and `POST /purge/{id}` (dev mode; reported as `delete_allowed` by `/health`) |
+| `ATLAS_OVERPASS_URL` | `https://overpass-api.de/api/interpreter` | Overpass endpoint for `osm`, `chunks` and `POST /osm` |
+| `ATLAS_RECIPES_DIR` | `/data/recipes` | Where `--recipe <name>` finds `<name>.json` |
 | `ATLAS_BACKEND` | `comfyui` | Backend key |
 | `COMFYUI_BASE_URL` | `http://host.docker.internal:8188` | ComfyUI on the compose host |
 | `ATLAS_MODELS_DIR` | `/data/models` | Checkpoints and LoRAs, read-only, SHA256 recorded per job |
@@ -353,12 +330,14 @@ docker compose --profile test run --rm test   # the suite against real GDAL, no 
 
 Versioning is derived from git tags via `hatch-vcs`.
 
-**Branches and releases.** Work lands on `dev` (the default branch) through PRs. A release is a PR from `dev` into `main`:
+**Branches and releases.** Work lands on `dev` (the default branch) through PRs, and `main` must never be ahead of `dev`. Branch from `origin/dev` and never push to `main` directly. Because `main` is protected, a release is a PR from `dev` into `main`:
 
 1. Cut the CHANGELOG on `dev`: rename `[Unreleased]` to `[X.Y.Zrc1] - <date>`, then open the `dev` → `main` PR.
 2. Tag `vX.Y.Zrc1` on the PR's head commit. That publishes a pre-release to PyPI, GHCR (`:X.Y.Zrc1`, never `:latest`) and GitHub Releases, so the exact commit under review can be installed and baked with.
 3. Fixes go to `dev` and get `rc2`, `rc3`, …, each with its own CHANGELOG heading.
-4. Once approved, rename the heading to `[X.Y.Z]`, merge the PR, and tag `vX.Y.Z` on `main`. Only finals move `:latest` and the `:X.Y` image tag.
+4. Once approved, rename the heading to `[X.Y.Z]`, merge the PR, then immediately merge `main` back into `dev` (`git switch dev && git merge --ff-only origin/main` if possible, otherwise a merge commit) so the release merge commit is not left on `main` alone. Tag `vX.Y.Z` on `main`. Only finals move `:latest` and the `:X.Y` image tag.
+
+If `main` stops requiring a PR, a release instead fast-forwards it to a `dev` commit that passed CI (`git push origin origin/dev:main`) and tags it there.
 
 `main` only changes through a PR with green CI. CI is a standalone workflow that apt-installs `gdal-bin` and `python3-gdal` before running the suite, since the tests drive real GDAL on a synthetic DEM. Release publishes to PyPI (OIDC trusted publishing) and GHCR on `v*` tags. This repo was scaffolded from [`argus-pkg-template`](https://github.com/smk762/argus-pkg-template); run `copier update` to pull template changes.
 

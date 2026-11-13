@@ -29,6 +29,21 @@ jobs:
       - name: ruff format --check
         run: uvx ruff@0.15.16 format --check src/ tests/
 
+  docs:
+    # docs/cli.md is generated from the Typer app; the UIs import it at dev HEAD,
+    # so it must match the CLI at every commit (smk762/argus-ci#8 will replace this).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked --all-extras --python 3.12
+      - name: docs/cli.md matches the CLI
+        run: make docs-check
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -53,7 +68,7 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
-    needs: [lint, test]
+    needs: [lint, docs, test]
     steps:
       - uses: actions/checkout@v4
         with:

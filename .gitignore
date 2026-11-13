@@ -8,6 +8,8 @@ build/
 .ruff_cache/
 # hatch-vcs writes this at build time (version derived from git tags)
 src/argus_atlas/_version.py
+# hatch_build.py writes the build's git commit here
+src/argus_atlas/_build_info.py
 
 # Local job output from the README walkthrough
 jobs/

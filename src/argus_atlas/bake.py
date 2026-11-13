@@ -25,6 +25,7 @@ from argus_atlas.hashing import sha256_file
 from argus_atlas.jobs import CONTROL_STAGES, load_sidecar, save_sidecar
 from argus_atlas.metadata import bake_payload, embed_png, payload_json
 from argus_atlas.models import AtlasError, BakeParams, BakeRecord, FileRef, JobSidecar, ProgressEvent
+from argus_atlas.provenance import generator
 
 logger = structlog.get_logger()
 
@@ -132,6 +133,7 @@ def run_bake(
                 aligned=False,
                 error=str(exc),
                 completed_at=_now(),
+                generator=generator(),
             )
             sidecar.tiles = None
             save_sidecar(job_dir, sidecar)
@@ -148,6 +150,7 @@ def run_bake(
             geotiff=FileRef(path=tif.name, sha256=sha256_file(tif)),
             aligned=True,
             completed_at=_now(),
+            generator=generator(),
         )
         sidecar.tiles = None  # a new bake invalidates any earlier archive
         lap("georeference")

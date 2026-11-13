@@ -22,6 +22,7 @@ ENV_MODELS_DIR = "ATLAS_MODELS_DIR"
 ENV_WORKFLOW = "ATLAS_WORKFLOW"
 ENV_CORS_ORIGINS = "ATLAS_CORS_ORIGINS"
 ENV_ALLOW_OSM = "ATLAS_ALLOW_OSM"
+ENV_ALLOW_DELETE = "ATLAS_ALLOW_DELETE"
 ENV_OVERPASS_URL = "ATLAS_OVERPASS_URL"
 ENV_RECIPES_DIR = "ATLAS_RECIPES_DIR"
 ENV_DEM_SOURCE = "ATLAS_DEM_SOURCE"
@@ -105,6 +106,14 @@ def osm_allowed(override: bool | None = None) -> bool:
     if override is not None:
         return override
     return os.environ.get(ENV_ALLOW_OSM, "").strip().lower() in _TRUTHY
+
+
+def delete_allowed(override: bool | None = None) -> bool:
+    """``POST /purge`` and ``POST /purge/{id}`` (deleting jobs) are OFF unless ``ATLAS_ALLOW_DELETE``
+    is truthy — a dev-mode tool for clearing QA leftovers; compose sets it from ``DEVMODE``."""
+    if override is not None:
+        return override
+    return os.environ.get(ENV_ALLOW_DELETE, "").strip().lower() in _TRUTHY
 
 
 def overpass_url(override: str | None = None) -> str:

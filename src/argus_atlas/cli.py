@@ -783,6 +783,9 @@ def inspect(
         return
     g = sidecar.grid
     typer.echo(f"{sidecar.job_id} [{sidecar.status}] atlas {sidecar.atlas_version}, created {sidecar.created_at}")
+    if sidecar.generator:
+        gen = sidecar.generator
+        typer.echo(f"  built by: {gen.package} {gen.version} @ {gen.commit or 'unknown commit'}")
     typer.echo(f"  dem:      {sidecar.dem.path} ({sidecar.dem.sha256[:12]}…)")
     typer.echo(f"  bbox:     {sidecar.bbox.as_text()}")
     typer.echo(f"  grid:     {g.width}x{g.height} px, {g.resolution:.3f} m/px, ul ({g.ulx:.3f}, {g.uly:.3f}) {g.crs}")

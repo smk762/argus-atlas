@@ -56,6 +56,7 @@ def test_health(client: TestClient) -> None:
     assert body["status"] == "ok" and body["service"] == "argus-atlas" and body["version"] == __version__
     assert body["read_only"] is True  # baking disabled by default
     assert body["osm_allowed"] is False  # and so is fetching OSM from the server
+    assert "commit" in body
     assert (body["gdal"] is None) is (not HAS_GDAL)
 
 
@@ -250,3 +251,108 @@ def test_full_flow_controls_bake_tiles(roots: dict[str, Path], dem: Path, models
         == 400
     )
     assert app.get("/presets").json()["presets"][0]["name"]
+
+
+# -- POST /purge (ATLAS_ALLOW_DELETE) ------------------------------------------------------------------
+
+CONFIRM = {"confirm": "purge"}
+
+
+def _deleting(roots: dict[str, Path], **kwargs) -> TestClient:  # noqa: ANN003
+    return TestClient(create_app(jobs_dir=roots["jobs"], dem_dir=roots["dem"], allow_delete=True, **kwargs))
+
+
+def test_purge_403_when_disabled(client: TestClient, roots: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_job(roots["jobs"])
+    assert client.get("/health").json()["delete_allowed"] is False
+    for path in ("/purge/seeded", "/purge"):
+        refused = client.post(path, json=CONFIRM)
+        assert refused.status_code == 403 and "ATLAS_ALLOW_DELETE" in refused.json()["detail"]
+    assert (roots["jobs"] / "seeded" / "job.json").is_file()
+    monkeypatch.setenv("ATLAS_ALLOW_DELETE", "1")
+    env_app = TestClient(create_app(jobs_dir=roots["jobs"], dem_dir=roots["dem"]))
+    assert env_app.get("/health").json()["delete_allowed"] is True
+    # bake and osm stay refused when only deleting is on
+    assert env_app.post("/bake/stream", json={}).status_code == 403
+    assert env_app.post("/osm", json={}).status_code == 403
+
+
+def test_purge_one_job(roots: dict[str, Path]) -> None:
+    _seed_job(roots["jobs"], "keep")
+    _seed_job(roots["jobs"], "drop")
+    (roots["jobs"] / "drop" / "fantasy.tif").write_bytes(b"baked")
+    c = _deleting(roots)
+    for body in (None, {}, {"confirm": "yes"}, {"confirm": "purge", "extra": 1}):
+        assert c.post("/purge/drop", json=body).status_code == 400
+    assert c.post("/purge/drop", content=b"not json").status_code == 400
+    resp = c.post("/purge/drop", json=CONFIRM)
+    assert resp.status_code == 200 and resp.json() == {"deleted": ["drop"]}
+    assert not (roots["jobs"] / "drop").exists() and (roots["jobs"] / "keep" / "job.json").is_file()
+    assert c.post("/purge/drop", json=CONFIRM).status_code == 404
+    assert [j["job_id"] for j in c.get("/jobs").json()["jobs"]] == ["keep"]
+
+
+def test_purge_one_removes_a_broken_job(roots: dict[str, Path]) -> None:
+    (roots["jobs"] / "broken").mkdir()
+    (roots["jobs"] / "broken" / "job.json").write_text("{not json")
+    c = _deleting(roots)
+    assert c.post("/purge/broken", json=CONFIRM).status_code == 200
+    assert not (roots["jobs"] / "broken").exists()
+
+
+def test_purge_stays_inside_the_jobs_dir(roots: dict[str, Path], tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "job.json").write_text("{}")
+    (roots["jobs"] / "link").symlink_to(outside, target_is_directory=True)
+    (roots["jobs"] / "notajob").mkdir()  # no job.json: not a job, never deleted
+    c = _deleting(roots)
+    assert c.post("/purge/..", json=CONFIRM).status_code in (400, 404)
+    assert c.post("/purge/..evil", json=CONFIRM).status_code == 400
+    assert c.post("/purge/..%2Foutside", json=CONFIRM).status_code in (400, 404)
+    assert c.post("/purge/link", json=CONFIRM).status_code == 404
+    assert c.post("/purge/notajob", json=CONFIRM).status_code == 404
+    assert c.post("/purge", json=CONFIRM).json() == {"deleted": [], "skipped": []}
+    assert (outside / "job.json").is_file() and (roots["jobs"] / "link").is_symlink()
+    assert (roots["jobs"] / "notajob").is_dir()
+
+
+def test_purge_refuses_a_job_that_is_baking(roots: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    import argus_atlas.bake
+
+    _seed_job(roots["jobs"], "baking")
+    _seed_job(roots["jobs"], "idle")
+    started, finish = threading.Event(), threading.Event()
+
+    def slow_bake(*args, **kwargs) -> None:  # noqa: ANN002, ANN003
+        started.set()
+        assert finish.wait(10)
+
+    monkeypatch.setattr(argus_atlas.bake, "run_bake", slow_bake)
+    c = TestClient(
+        create_app(
+            jobs_dir=roots["jobs"],
+            dem_dir=roots["dem"],
+            models_dir=roots["models"],
+            allow_bake=True,
+            allow_delete=True,
+            backend_factory=FakeBackend,
+        )
+    )
+    baker = threading.Thread(target=lambda: c.post("/bake/stream", json={"job_id": "baking", "checkpoint": "c"}))
+    baker.start()
+    try:
+        assert started.wait(10)
+        refused = c.post("/purge/baking", json=CONFIRM)
+        assert refused.status_code == 409 and "busy" in refused.json()["detail"]
+        # a second bake of the same job is refused too
+        assert c.post("/bake/stream", json={"job_id": "baking", "checkpoint": "c"}).status_code == 409
+        assert c.post("/purge", json=CONFIRM).json() == {"deleted": ["idle"], "skipped": ["baking"]}
+    finally:
+        finish.set()
+        baker.join(10)
+    assert (roots["jobs"] / "baking" / "job.json").is_file()
+    assert c.post("/purge/baking", json=CONFIRM).status_code == 200
+    assert not (roots["jobs"] / "baking").exists()

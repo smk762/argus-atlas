@@ -11,6 +11,7 @@ from argus_atlas.georef import AlignmentError
 from argus_atlas.hashing import sha256_file
 from argus_atlas.jobs import copy_job, load_sidecar
 from argus_atlas.models import AtlasError, BakeParams, JobSidecar, ProgressEvent
+from argus_atlas.provenance import generator
 from tests.conftest import requires_gdal
 from tests.fakebackend import FakeBackend
 
@@ -34,6 +35,7 @@ def test_fake_bake_produces_aligned_geotiff(job: tuple[Path, JobSidecar], models
     assert sidecar.bake.checkpoint.name == "sd_xl_base_1.0.safetensors" and len(sidecar.bake.checkpoint.sha256) == 64
     assert sidecar.bake.lora is not None and sidecar.bake.lora.name == "fantasy_map.safetensors"
     assert sidecar.bake.params.seed == 7 and sidecar.bake.backend == "fake"
+    assert sidecar.bake.generator == generator()
     assert load_sidecar(job_dir) == sidecar
 
 
@@ -98,6 +100,7 @@ def test_bake_embeds_payload_in_png_and_geotiff(job: tuple[Path, JobSidecar], mo
     payload = read_png_payload(job_dir / "fantasy.png")
     assert payload["params"]["preset"] == "imhof" and payload["params"]["seed"] == 11
     assert payload["checkpoint"]["sha256"] == sidecar.bake.checkpoint.sha256
+    assert payload["atlas_commit"] == generator().commit
     assert sidecar.bake.image.sha256 == sha256_file(job_dir / "fantasy.png")  # digest taken after embedding
     info = gdal_ops.gdalinfo_json(job_dir / "fantasy.tif")
     desc = info["metadata"][""]["TIFFTAG_IMAGEDESCRIPTION"]

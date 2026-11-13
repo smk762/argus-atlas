@@ -12,6 +12,8 @@ Routes:
     GET  /jobs/{id}/preview/{kind}     PNG; kind is hillshade, slope, land or fantasy (ids only, no paths)
     GET  /jobs/{id}/archive            the PMTiles bytes
     GET  /jobs/{id}/labels             the place-name GeoJSON `argus-atlas labels --job` wrote (built by the CLI only)
+    POST /purge/{id}                   {"confirm": "purge"} -> delete one job dir; 403 unless ATLAS_ALLOW_DELETE=1
+    POST /purge                        {"confirm": "purge"} -> delete every job dir that is not busy; same flag
 
 Paths in request bodies (the DEM, a land polygon) are resolved under
 ``$ATLAS_DEM_DIR`` and refused if they escape it; jobs are addressed by id and
@@ -22,7 +24,9 @@ Live baking is OFF unless ``$ATLAS_ALLOW_BAKE`` is truthy — the demo-safe
 posture forge and proof share. The guard is the shared
 :class:`argus_cortex.server.WriteGuard` with a predicate that refuses only the
 ``/bake`` routes, so ``POST /controls`` and ``POST /tiles`` (CPU + GDAL only)
-stay available on a GPU-less host and stored jobs remain readable.
+stay available on a GPU-less host and stored jobs remain readable. Deleting
+jobs (``/purge``) is a dev-mode tool, off unless ``$ATLAS_ALLOW_DELETE`` is
+truthy, and refuses a job that a bake, tiles run or controls run is writing.
 """
 
 from __future__ import annotations
@@ -30,10 +34,15 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
+import shutil
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 try:
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, HTTPException, Request
+    from fastapi.concurrency import run_in_threadpool
     from fastapi.responses import FileResponse, StreamingResponse
 except ImportError as exc:  # pragma: no cover
     raise ImportError("Server requires: pip install argus-atlas[server]") from exc
@@ -46,6 +55,7 @@ from argus_atlas.backends.base import BackendError, BakeBackend
 from argus_atlas.jobs import JobStore, is_safe_id, new_job_id
 from argus_atlas.models import (
     DEFAULT_LORA_WEIGHT,
+    SIDECAR_NAME,
     Z_FACTOR_AUTO,
     AtlasError,
     BakeParams,
@@ -56,15 +66,18 @@ from argus_atlas.models import (
     ZFactor,
     check_z_factor,
 )
+from argus_atlas.provenance import generator
 
 _BAKE_REFUSAL = "live baking is disabled on this host (set ATLAS_ALLOW_BAKE=1 to enable POST /bake/stream)"
 _OSM_REFUSAL = "fetching OSM from the server is disabled on this host (set ATLAS_ALLOW_OSM=1 to enable POST /osm)"
+_DELETE_REFUSAL = "deleting jobs is disabled on this host (set ATLAS_ALLOW_DELETE=1 to enable POST /purge)"
+PURGE_CONFIRM = {"confirm": "purge"}
 INPUT_DEM_SUFFIXES = (".tif", ".tiff", ".vrt")
 INPUT_VECTOR_SUFFIXES = (".geojson", ".gpkg", ".shp", ".fgb")
 
 
-def _make_refuse(allow_bake: bool, allow_osm: bool):  # noqa: ANN202 - argus_cortex Refuse
-    """WriteGuard predicate: refuse the bake and/or osm routes that are switched off; other writes pass."""
+def _make_refuse(allow_bake: bool, allow_osm: bool, allow_delete: bool = False):  # noqa: ANN202 - argus_cortex Refuse
+    """WriteGuard predicate: refuse the bake, osm and/or purge routes that are switched off; other writes pass."""
 
     def refuse(scope, headers) -> str | None:  # noqa: ANN001 - starlette Scope / Headers
         path = str(scope.get("path", ""))
@@ -72,6 +85,8 @@ def _make_refuse(allow_bake: bool, allow_osm: bool):  # noqa: ANN202 - argus_cor
             return _BAKE_REFUSAL
         if not allow_osm and path.startswith("/osm"):
             return _OSM_REFUSAL
+        if not allow_delete and path.startswith("/purge"):
+            return _DELETE_REFUSAL
         return None
 
     return refuse
@@ -148,6 +163,7 @@ def create_app(
     models_dir: str | Path | None = None,
     allow_bake: bool | None = None,
     allow_osm: bool | None = None,
+    allow_delete: bool | None = None,
     backend_factory=None,  # noqa: ANN001 - Callable[[], BakeBackend]; None = backend_from_env
     osm_fetcher=None,  # noqa: ANN001 - Callable[[str, str], bytes]; None = Overpass over HTTP (tests inject one)
 ) -> FastAPI:
@@ -158,6 +174,7 @@ def create_app(
     """
     allow_bake = config.bake_allowed(allow_bake)
     allow_osm = config.osm_allowed(allow_osm)
+    allow_delete = config.delete_allowed(allow_delete)
     jobs_root = config.jobs_dir(jobs_dir)
     dem_root = config.dem_dir(dem_dir)
     models_root = config.models_dir(models_dir)
@@ -169,11 +186,11 @@ def create_app(
         version=__version__,
     )
 
-    if not (allow_bake and allow_osm):
+    if not (allow_bake and allow_osm and allow_delete):
         # Registered before CORS so CORSMiddleware stays outermost and a refused
         # cross-origin bake still carries CORS headers. Pure ASGI: never buffers
         # the NDJSON stream when baking IS allowed (the predicate passes it through).
-        app.add_middleware(WriteGuard, refuse=_make_refuse(allow_bake, allow_osm))
+        app.add_middleware(WriteGuard, refuse=_make_refuse(allow_bake, allow_osm, allow_delete))
 
     if cors:
         from fastapi.middleware.cors import CORSMiddleware
@@ -185,6 +202,42 @@ def create_app(
             allow_methods=["*"],
             allow_headers=["*"],
         )
+
+    # Job ids some route is writing (controls, bake, tiles) or deleting. A purge refuses a busy job and
+    # claims the one it deletes, so a bake cannot start in a directory that is being removed.
+    busy: set[str] = set()
+    busy_lock = threading.Lock()
+
+    def _claim(job_id: str) -> None:
+        with busy_lock:
+            if job_id in busy:
+                raise HTTPException(
+                    status_code=409, detail=f"job {job_id!r} is busy (a bake, tiles or purge is running)"
+                )
+            busy.add(job_id)
+
+    def _release(job_id: str) -> None:
+        with busy_lock:
+            busy.discard(job_id)
+
+    @contextmanager
+    def _claimed(job_id: str) -> Iterator[None]:
+        _claim(job_id)
+        try:
+            yield
+        finally:
+            _release(job_id)
+
+    def _job_dir_to_delete(job_id: str) -> Path:
+        """The job's directory, confined to the jobs root: a safe id, a real directory (not a symlink)
+        whose resolved parent is the root, holding a ``job.json`` (read or not, so a broken job can go)."""
+        _require_id(job_id)
+        path = store.dir(job_id)
+        if path.is_symlink() or not (path / SIDECAR_NAME).is_file():
+            raise HTTPException(status_code=404, detail=f"no job {job_id!r}")
+        if path.resolve().parent != jobs_root.resolve():
+            raise HTTPException(status_code=400, detail=f"job {job_id!r} is outside the jobs dir")
+        return path
 
     def _backend() -> BakeBackend:
         if backend_factory is not None:
@@ -219,8 +272,10 @@ def create_app(
             "status": "ok",
             "service": "argus-atlas",
             "version": __version__,
+            "commit": generator().commit,
             "read_only": not allow_bake,
             "osm_allowed": allow_osm,
+            "delete_allowed": allow_delete,
             "gdal": gdal_ops.gdal_version(),
         }
 
@@ -356,21 +411,22 @@ def create_app(
         except gdal_ops.GdalError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         try:
-            sidecar = build_controls(
-                dem,
-                bbox,
-                store.dir(job_id),
-                land=land,
-                layers=layers,
-                sea_level=request.sea_level,
-                composite=request.composite,
-                resampling=request.resampling,
-                long_side=request.long_side,
-                resolution=request.resolution,
-                job_id=job_id,
-                z_factor=request.z_factor,
-                vertical_exaggeration=request.vertical_exaggeration,
-            )
+            with _claimed(job_id):
+                sidecar = build_controls(
+                    dem,
+                    bbox,
+                    store.dir(job_id),
+                    land=land,
+                    layers=layers,
+                    sea_level=request.sea_level,
+                    composite=request.composite,
+                    resampling=request.resampling,
+                    long_side=request.long_side,
+                    resolution=request.resolution,
+                    job_id=job_id,
+                    z_factor=request.z_factor,
+                    vertical_exaggeration=request.vertical_exaggeration,
+                )
         except AtlasError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"job_id": sidecar.job_id, "status": sidecar.status, "sidecar": sidecar.model_dump(mode="json")}
@@ -406,6 +462,7 @@ def create_app(
         except (BackendError, AtlasError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         job_dir = store.dir(sidecar.job_id)
+        _claim(sidecar.job_id)
 
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[dict | None] = asyncio.Queue()
@@ -425,10 +482,13 @@ def create_app(
             except AtlasError:
                 pass  # run_bake already emitted the error frame
             finally:
+                _release(sidecar.job_id)
                 emit(None)
 
+        # Started here, not in the generator, so the claim is released even if the body is never streamed.
+        worker = loop.run_in_executor(None, work)
+
         async def stream():
-            worker = loop.run_in_executor(None, work)
             try:
                 while True:
                     frame = await queue.get()
@@ -451,7 +511,8 @@ def create_app(
         if sidecar.bake is None or not sidecar.bake.aligned or sidecar.bake.geotiff is None:
             raise HTTPException(status_code=409, detail=f"job {sidecar.job_id!r} has no aligned GeoTIFF to tile")
         try:
-            record = tile_job(job_dir, sidecar, min_zoom=request.min_zoom, max_zoom=request.max_zoom)
+            with _claimed(sidecar.job_id):
+                record = tile_job(job_dir, sidecar, min_zoom=request.min_zoom, max_zoom=request.max_zoom)
         except AlignmentError as exc:
             raise HTTPException(status_code=409, detail=f"alignment gate failed: {exc}") from exc
         except NotTileableError as exc:  # e.g. a chunk whose crop failed: not tileable yet, like an unbaked job
@@ -503,5 +564,46 @@ def create_app(
                 status_code=404, detail=f"job {job_id!r} has no labels (run `argus-atlas labels --job`)"
             )
         return FileResponse(path, media_type="application/geo+json")
+
+    async def _require_confirm(request: Request) -> None:
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        if body != PURGE_CONFIRM:
+            raise HTTPException(status_code=400, detail='the body must be {"confirm": "purge"}')
+
+    @app.post("/purge/{job_id}")
+    async def purge_job(job_id: str, request: Request) -> dict:
+        """Delete one job and everything under its directory. Off unless ``ATLAS_ALLOW_DELETE=1``;
+        409 while the job is busy. A broken ``job.json`` does not stop it: that is a leftover too."""
+        await _require_confirm(request)
+        path = _job_dir_to_delete(job_id)
+        with _claimed(job_id):
+            await run_in_threadpool(shutil.rmtree, path)
+        return {"deleted": [job_id]}
+
+    @app.post("/purge")
+    async def purge_all(request: Request) -> dict:
+        """Delete every job under the jobs dir, skipping (and listing) the busy ones. Only directories
+        with a safe id and a ``job.json`` count as jobs; anything else in the root is left alone."""
+        await _require_confirm(request)
+        deleted: list[str] = []
+        skipped: list[str] = []
+        if jobs_root.is_dir():
+            for child in sorted(jobs_root.iterdir()):
+                if not is_safe_id(child.name) or child.is_symlink() or not (child / SIDECAR_NAME).is_file():
+                    continue
+                try:
+                    _claim(child.name)
+                except HTTPException:
+                    skipped.append(child.name)
+                    continue
+                try:
+                    await run_in_threadpool(shutil.rmtree, child)
+                    deleted.append(child.name)
+                finally:
+                    _release(child.name)
+        return {"deleted": deleted, "skipped": skipped}
 
     return app

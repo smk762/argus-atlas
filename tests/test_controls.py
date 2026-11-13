@@ -13,6 +13,7 @@ from argus_atlas.hashing import sha256_file
 from argus_atlas.jobs import load_sidecar
 from argus_atlas.models import AtlasError, JobSidecar
 from argus_atlas.png import png_size
+from argus_atlas.provenance import generator
 from tests.conftest import TEST_BBOX, TEST_LONG_SIDE, requires_gdal
 
 pytestmark = requires_gdal
@@ -45,6 +46,7 @@ def test_controls_match_sidecar(job: tuple[Path, JobSidecar]) -> None:
     assert all(isinstance(c.argv, list) and c.argv for c in reloaded.commands)
     raw = json.loads((job_dir / "job.json").read_text())
     assert raw["grid"]["crs"] == "EPSG:3857" and raw["atlas_version"]
+    assert reloaded.generator == generator() and raw["generator"]["package"] == "argus-atlas"
     assert reloaded.status == "controls"
     assert reloaded.zoom_range[1] == reloaded.native_zoom
 

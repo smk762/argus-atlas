@@ -25,16 +25,44 @@ from argus_atlas.backends.workflow import (
 )
 from argus_atlas.hashing import sha256_bytes
 from argus_atlas.jobs import is_safe_id
-from argus_atlas.models import AtlasError, BakeParams, Recipe, RecipeRecord
+from argus_atlas.models import AtlasError, BakeParams, Recipe, RecipeRecord, ZFactor
 from argus_atlas.presets import get_preset, resolve_params
 
 RECIPE_SUFFIX = ".json"
 
 
+# Relief fields at these values are left out of the digest: a recipe pinned to the pre-0.3.0
+# unscaled relief ("z_factor": 1) keeps the digest its chunks were baked under.
+_LEGACY_RELIEF = {"z_factor": 1.0, "vertical_exaggeration": 1.0}
+
+
 def recipe_digest(recipe: Recipe) -> str:
-    """SHA256 of the recipe's canonical JSON (sorted keys, defaults filled in)."""
-    canonical = json.dumps(recipe.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    """SHA256 of the recipe's canonical JSON (sorted keys, defaults filled in).
+
+    The relief fields count like any other, so chunks painted over differently scaled
+    hillshades are never neighbours, done chunks or one mosaic. The default ``auto``
+    z factor is in the canonical JSON; at their legacy values they are omitted."""
+    fields = recipe.model_dump(mode="json")
+    for key, legacy in _LEGACY_RELIEF.items():
+        if fields.get(key) == legacy:
+            del fields[key]
+    canonical = json.dumps(fields, sort_keys=True, separators=(",", ":"))
     return sha256_bytes(canonical.encode("utf-8"))
+
+
+def with_relief(recipe: Recipe, z_factor: ZFactor | None = None, vertical_exaggeration: float | None = None) -> Recipe:
+    """*recipe* with its relief overridden where given (``chunk``/``chunks`` flags); the digest follows."""
+    update: dict[str, object] = {}
+    if z_factor is not None:
+        update["z_factor"] = z_factor
+    if vertical_exaggeration is not None:
+        update["vertical_exaggeration"] = vertical_exaggeration
+    if not update:
+        return recipe
+    try:
+        return Recipe.model_validate({**recipe.model_dump(), **update})
+    except ValueError as exc:
+        raise AtlasError(f"recipe {recipe.name!r}: {exc}") from exc
 
 
 def recipe_record(recipe: Recipe) -> RecipeRecord:

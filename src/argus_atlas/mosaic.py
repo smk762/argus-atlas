@@ -33,7 +33,7 @@ from argus_atlas.hashing import sha256_file
 from argus_atlas.jobs import is_safe_id, load_sidecar
 from argus_atlas.labels import LABELS_NAME
 from argus_atlas.mercator import mercator_to_bbox
-from argus_atlas.models import AtlasError, Grid, JobSidecar
+from argus_atlas.models import AtlasError, Grid, JobSidecar, relief_key
 from argus_atlas.tiles import CHUNK_SLIVER_PX, TilesError, collect_xyz, pack_pmtiles
 
 logger = structlog.get_logger()
@@ -60,6 +60,7 @@ def style_chunks(style_dir: Path) -> list[tuple[Path, JobSidecar]]:
     found = []
     seen: set[Path] = set()
     recipes: dict[str, str] = {}
+    reliefs: dict[tuple[str, float], str] = {}
     for job_dir in sorted(p for p in style_dir.iterdir() if p.is_dir() and is_safe_id(p.name)):
         real = job_dir.resolve()
         if real in seen:
@@ -81,10 +82,14 @@ def style_chunks(style_dir: Path) -> list[tuple[Path, JobSidecar]]:
             if sha256_file(path) != ref.sha256:
                 raise MosaicError(f"{sidecar.job_id}: {ref.path} changed since its job.json")
         recipes.setdefault(recipe.recipe.name, sidecar.job_id)
+        reliefs.setdefault(relief_key(sidecar.relief), sidecar.job_id)
         found.append((job_dir, sidecar))
     if len(recipes) > 1:
         held = ", ".join(f"{name} ({job_id})" for name, job_id in sorted(recipes.items()))
         raise MosaicError(f"{style_dir} holds chunks of more than one recipe: {held}")
+    if len(reliefs) > 1:
+        held = ", ".join(f"{mode} {value:g} ({job_id})" for (mode, value), job_id in sorted(reliefs.items()))
+        raise MosaicError(f"{style_dir} holds chunks baked with different relief: {held}")
     return found
 
 

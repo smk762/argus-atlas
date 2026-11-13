@@ -52,6 +52,8 @@ from argus_atlas.models import (
     ProgressEvent,
     RecipeRecord,
     SeamBlend,
+    relief_key,
+    relief_key_for,
 )
 from argus_atlas.png import png_size
 
@@ -204,6 +206,7 @@ def find_neighbours(
     *,
     exclude: Path | None = None,
     recipe_sha256: str | None = None,
+    relief: tuple[str, float] | None = None,
 ) -> list[ChunkNeighbour]:
     """Already-cropped chunks of *recipe* around *chunk* under *root*, each checked against its sidecar.
 
@@ -213,7 +216,9 @@ def find_neighbours(
     tile, a chunk of the recipe that overlaps *chunk* (the same tile in another job,
     or another zoom over the same ground), or a crop whose bytes no longer match
     its sidecar is an error, not a skip. A neighbour baked from another version of
-    the recipe (its digest is not *recipe_sha256*) is used, with a warning.
+    the recipe (its digest is not *recipe_sha256*) is used, with a warning, unless its
+    relief (:func:`~argus_atlas.models.relief_key`) is not *relief*: a neighbour painted
+    over a differently scaled hillshade is an error.
     """
     wanted = {f"{z}/{x}/{y}" for z, x, y in neighbour_tiles(chunk.z, chunk.x, chunk.y)}
     found: dict[str, ChunkNeighbour] = {}
@@ -250,6 +255,12 @@ def find_neighbours(
         image = child / c.image.path
         if not image.is_file() or sha256_file(image) != c.image.sha256:
             raise AtlasError(f"neighbour {other.job_id}: {c.image.path} is missing or changed since its job.json")
+        if relief is not None and relief_key(other.relief) != relief:
+            mode, value = relief_key(other.relief)
+            raise AtlasError(
+                f"neighbour {other.job_id} ({c.tile}) has relief {mode} {value:g}, this chunk {relief[0]} {relief[1]:g}: "
+                "bake into another style dir, or set the recipe's z_factor/vertical_exaggeration to match"
+            )
         if recipe_sha256 is not None and other.recipe.sha256 != recipe_sha256:
             logger.warning("chunks.neighbour_recipe_changed", neighbour=other.job_id, tile=c.tile, recipe=recipe)
         found[c.tile] = ChunkNeighbour(
@@ -596,7 +607,10 @@ def run_chunk(
         )
         root = neighbours_root if neighbours_root is not None else out_dir.parent
         # Before anything is written, so a neighbour problem leaves this job as it was.
-        neighbours = find_neighbours(root, recipe.recipe.name, record, exclude=out_dir, recipe_sha256=recipe.sha256)
+        relief = relief_key_for(recipe.recipe.z_factor, recipe.recipe.vertical_exaggeration)
+        neighbours = find_neighbours(
+            root, recipe.recipe.name, record, exclude=out_dir, recipe_sha256=recipe.sha256, relief=relief
+        )
         sidecar = build_controls(
             dem,
             chunk_bbox(z, x, y),
@@ -608,6 +622,8 @@ def run_chunk(
             resampling=resampling,
             grid=canvas,
             chunk=record,
+            z_factor=recipe.recipe.z_factor,
+            vertical_exaggeration=recipe.recipe.vertical_exaggeration,
         )
         sidecar = sidecar.model_copy(update={"recipe": recipe})
         save_sidecar(out_dir, sidecar)

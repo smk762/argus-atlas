@@ -250,6 +250,7 @@ jobs/aoi-1/
 | Prompt | `antique fantasy map, ink coastlines, parchment, illustrated relief, no text, no labels, no compass rose` | Labels and roses fight georeferencing and tile seams. |
 | Negative | `text, watermark, letters, words, frame, border, photograph, satellite` | |
 | Zoom range | native-2 through native, clipped to 0–14 | Native is the Web Mercator zoom closest to the canvas ground resolution. |
+| Z factor | `auto` | Heights scaled by 1/cos(latitude) before hillshade and slope, undoing Web Mercator's horizontal stretch (×1.33 at 41°, ×2.37 at 65°). `--z-factor off` restores the uncorrected relief; `--vertical-exaggeration` multiplies on top. See [`docs/relief.md`](https://github.com/smk762/argus-atlas/blob/main/docs/relief.md). |
 
 ControlNet choice and weight live in the ComfyUI workflow template, not in Python. The packaged template is a starting point the operator replaces.
 

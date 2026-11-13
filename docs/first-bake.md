@@ -4,9 +4,11 @@ State on 17 Oct 2026, written on the laptop before moving development to the GPU
 
 ## What is already there
 
+`<GPU_HOST>` is the GPU box (morpheus). The real host/IP is in the local `.env` (see `.env.example`); check it there.
+
 | Thing | Where | Notes |
 |---|---|---|
-| ComfyUI 0.19.3 | `http://192.168.1.39:8188`, container `voluptas_comfyui` (`ghcr.io/radiatingreverberations/comfyui-extensions:v0.19.3`) on morpheus | RTX 3090, 24 GB. Started with `--listen`, so it is reachable from the LAN and from other containers on the host. **A watcher container (`voluptas_comfyui_cleanup`) stops it after 30 min idle and clears ComfyUI's `/output` and `/temp` every 15 min**: `docker start voluptas_comfyui` before a bake if `doctor` says unreachable, and never rely on ComfyUI's output dir — atlas's copy in the job dir is the one that survives. |
+| ComfyUI 0.19.3 | `http://<GPU_HOST>:8188`, container `voluptas_comfyui` (`ghcr.io/radiatingreverberations/comfyui-extensions:v0.19.3`) on morpheus | RTX 3090, 24 GB. Started with `--listen`, so it is reachable from the LAN and from other containers on the host. **A watcher container (`voluptas_comfyui_cleanup`) stops it after 30 min idle and clears ComfyUI's `/output` and `/temp` every 15 min**: `docker start voluptas_comfyui` before a bake if `doctor` says unreachable, and never rely on ComfyUI's output dir — atlas's copy in the job dir is the one that survives. |
 | Model tree | `/srv/imogen/models` (main), `/srv/imogen/fast/models-hot` (extra tree, `extra_model_paths.yaml`) | Owned by `smk`. 39 GB free on `/`. Mounted into ComfyUI as `/comfyui/models` and `/comfyui/extra_models/models-hot`. |
 | SDXL checkpoints | `checkpoints/sdxl/...` | e.g. `sdxl/juggernautXL_ragnarokBy/juggernautXL_ragnarokBy.safetensors`, `sdxl/epicrealismXL_pureFix/...`. **Juggernaut lives in the hot tree** (`/srv/imogen/fast/models-hot/checkpoints/sdxl/...`), not under `/srv/imogen/models` — ComfyUI merges both, atlas does not. No `sd_xl_base_1.0` (a 6.9 GB copy exists on the laptop in `argus-seed/models/` if wanted). |
 | ControlNets | `controlnet/openpose-sdxl/`, `controlnet/controlnet-union-sdxl/` | The union promax model was downloaded on 17 Oct (2.5 GB); ComfyUI listed it without a restart. |
@@ -279,10 +281,10 @@ Two things only a real bake caught: `gdal_proximity`/`gdal_fillnodata` write scr
 docker run -d --name atlas-api -u $(id -u):$(id -g) -p 8105:8105 -e ATLAS_CORS_ORIGINS='*' \
   -v /home/smk/argus/atlas-jobs:/data/out/atlas:ro argus-atlas:dev argus-atlas serve --port 8105 --cors
 python3 -m http.server 8106 --bind 0.0.0.0 --directory examples
-# http://192.168.1.39:8106/viewer.html?server=http://192.168.1.39:8105&job=garda-1
+# http://<GPU_HOST>:8106/viewer.html?server=http://<GPU_HOST>:8105&job=garda-1
 ```
 
-`examples/flow.html` (same static server, `http://192.168.1.39:8106/flow.html?server=http://192.168.1.39:8105`) runs the whole flow from the browser. For that the API container needs the inputs mounted and both opt-ins on — this is how `atlas-api` runs since 23 Oct:
+`examples/flow.html` (same static server, `http://<GPU_HOST>:8106/flow.html?server=http://<GPU_HOST>:8105`) runs the whole flow from the browser. For that the API container needs the inputs mounted and both opt-ins on — this is how `atlas-api` runs since 23 Oct:
 
 ```bash
 docker run -d --name atlas-api -u $(id -u):$(id -g) -p 8105:8105 \

@@ -66,6 +66,7 @@ from argus_atlas.models import (
     ZFactor,
     check_z_factor,
 )
+from argus_atlas.provenance import generator
 
 _BAKE_REFUSAL = "live baking is disabled on this host (set ATLAS_ALLOW_BAKE=1 to enable POST /bake/stream)"
 _OSM_REFUSAL = "fetching OSM from the server is disabled on this host (set ATLAS_ALLOW_OSM=1 to enable POST /osm)"
@@ -271,6 +272,7 @@ def create_app(
             "status": "ok",
             "service": "argus-atlas",
             "version": __version__,
+            "commit": generator().commit,
             "read_only": not allow_bake,
             "osm_allowed": allow_osm,
             "delete_allowed": allow_delete,

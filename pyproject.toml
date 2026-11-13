@@ -91,6 +91,9 @@ source = "vcs"
 [tool.hatch.build.hooks.vcs]
 version-file = "src/argus_atlas/_version.py"
 
+# hatch_build.py: records the git commit in _build_info.py (hatch-vcs leaves __commit_id__ None).
+[tool.hatch.build.hooks.custom]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/argus_atlas"]
 

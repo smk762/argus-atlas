@@ -34,6 +34,7 @@ from argus_atlas.jobs import is_safe_id, load_sidecar
 from argus_atlas.labels import LABELS_NAME
 from argus_atlas.mercator import mercator_to_bbox
 from argus_atlas.models import AtlasError, Grid, JobSidecar, relief_key
+from argus_atlas.provenance import generator
 from argus_atlas.tiles import CHUNK_SLIVER_PX, TilesError, collect_xyz, pack_pmtiles
 
 logger = structlog.get_logger()
@@ -245,6 +246,7 @@ def mosaic(style_dir: Path, out: Path, *, overview_min: int = DEFAULT_OVERVIEW_M
     labels_path.write_text(json.dumps(labels, ensure_ascii=False) + "\n", encoding="utf-8")
     bbox = mercator_to_bbox(*grid.bounds)
     manifest = {
+        "generator": generator().model_dump(),
         "style_dir": str(style_dir),
         "output": out.name,
         "format": "pmtiles" if as_pmtiles else "xyz",

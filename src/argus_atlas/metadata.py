@@ -21,6 +21,7 @@ from pathlib import Path
 
 from argus_atlas import __version__
 from argus_atlas.models import AtlasError, BakeParams, JobSidecar, ModelRef
+from argus_atlas.provenance import generator
 
 TEXT_KEY = "argus-atlas"
 SOFTWARE = f"argus-atlas {__version__}"
@@ -41,6 +42,7 @@ def bake_payload(
     return {
         "generator": SOFTWARE,
         "atlas_version": sidecar.atlas_version,
+        "atlas_commit": generator().commit,
         "job_id": sidecar.job_id,
         "bbox": sidecar.bbox.as_text(),
         "crs": sidecar.grid.crs,

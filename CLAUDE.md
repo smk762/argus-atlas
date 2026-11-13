@@ -27,7 +27,8 @@ Not checked out? Read https://github.com/smk762/argus-cortex/blob/main/SUITE.md
 
 `src/argus_atlas/`:
 
-- `models.py` — Pydantic v2 wire types + defaults. **`JobSidecar` (`job.json`) is the API contract and the georeferencing authority**: CRS, grid (`ulx/uly/pixel size`), DEM + control + model SHA256s, the exact GDAL argv arrays, bake and tiles records, and (0.2) the chunk, recipe and stage timings, and (0.3) the labels record. `ATLAS_VERSION` is its schema version.
+- `models.py` — Pydantic v2 wire types + defaults. **`JobSidecar` (`job.json`) is the API contract and the georeferencing authority**: CRS, grid (`ulx/uly/pixel size`), DEM + control + model SHA256s, the exact GDAL argv arrays, bake and tiles records, and (0.2) the chunk, recipe and stage timings, and (0.3) the labels record, and (0.4) `generator` (package version + git commit, on the job and on the bake record). `ATLAS_VERSION` is its schema version.
+- `provenance.py` — `generator()`: the atlas build that is running. The commit is the live `git rev-parse HEAD` in a source checkout, else `_build_info.COMMIT` (written by the root `hatch_build.py` build hook, because hatch-vcs leaves `__commit_id__` empty and a tagged version has no sha), else the `+g<sha>` of a dev version. Realms compares it with its docs record, so don't drop it from a build.
 - `mercator.py` — dependency-free EPSG:3857 maths (lon/lat <-> metres, zoom resolution, native zoom, XYZ tile bounds).
 - `config.py` — `ATLAS_*` env knobs, `bake_allowed()`, and `resolve_under_root()` (the path fence the API uses).
 - `gdal_ops.py` — argv builders + one subprocess runner for `gdalwarp` / `gdaldem` / `gdal_rasterize` / `gdal_translate` / `gdalinfo` / `gdal2tiles.py`. **GDAL is a system package, never pip; rasterio is not a dependency.**

@@ -58,6 +58,7 @@ from argus_atlas.models import (
     check_z_factor,
 )
 from argus_atlas.png import png_size
+from argus_atlas.provenance import generator
 
 logger = structlog.get_logger()
 
@@ -320,6 +321,7 @@ def build_controls(
     labels, label_commands = kept_labels(out_dir, chunk.inner if chunk is not None else grid)
     layer_sources = {n: FileRef(path=str(p.resolve()), sha256=sha256_file(p)) for n, p in sources.items()}
     sidecar = JobSidecar(
+        generator=generator(),
         job_id=job_id,
         created_at=datetime.now(UTC).isoformat(timespec="seconds"),
         dem=FileRef(path=str(dem.resolve()), sha256=sha256_file(dem)),

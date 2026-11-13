@@ -18,8 +18,9 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Sidecar schema version. Bump the minor for additive fields, the major for a
-# breaking change to what a reader must understand. 0.2 added chunk, recipe and timings; 0.3 labels.
-ATLAS_VERSION = "0.3"
+# breaking change to what a reader must understand. 0.2 added chunk, recipe and timings; 0.3 labels;
+# 0.4 generator (the argus-atlas package version and git commit that wrote the job and the bake).
+ATLAS_VERSION = "0.4"
 
 CRS = "EPSG:3857"
 EPSG_CODE = 3857
@@ -242,6 +243,15 @@ class BakeParams(BaseModel):
     recipe: str | None = None
 
 
+class GeneratorRecord(BaseModel):
+    """The argus-atlas build that wrote a record: package version (hatch-vcs, from git tags) and
+    the full git commit, or ``None`` when the build could not see git."""
+
+    package: str = "argus-atlas"
+    version: str
+    commit: str | None = None
+
+
 class BakeRecord(BaseModel):
     """What the bake produced. ``aligned`` is the alignment-gate verdict; a
     failed gate keeps ``image`` (the PNG) and leaves ``geotiff`` unset."""
@@ -257,6 +267,8 @@ class BakeRecord(BaseModel):
     aligned: bool
     error: str | None = None
     completed_at: str
+    # The atlas build that baked (may differ from the one that built the controls). None: before 0.4.
+    generator: GeneratorRecord | None = None
 
 
 class TilesRecord(BaseModel):
@@ -439,6 +451,8 @@ class JobSidecar(BaseModel):
     """``job.json`` — everything about one canvas, from DEM to archive."""
 
     atlas_version: str = ATLAS_VERSION
+    # The atlas build that wrote the controls. None: a job from before 0.4.
+    generator: GeneratorRecord | None = None
     job_id: str
     created_at: str
     dem: FileRef

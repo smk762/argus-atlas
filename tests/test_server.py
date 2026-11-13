@@ -56,6 +56,7 @@ def test_health(client: TestClient) -> None:
     assert body["status"] == "ok" and body["service"] == "argus-atlas" and body["version"] == __version__
     assert body["read_only"] is True  # baking disabled by default
     assert body["osm_allowed"] is False  # and so is fetching OSM from the server
+    assert "commit" in body
     assert (body["gdal"] is None) is (not HAS_GDAL)
 
 

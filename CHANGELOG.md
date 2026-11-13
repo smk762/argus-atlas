@@ -4,6 +4,14 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 
 ## [Unreleased]
 
+### Added
+
+- `POST /purge/{id}` deletes one job and everything under its directory; `POST /purge` deletes every job that is not busy and lists the ones it `skipped` (#29). Both are off unless `ATLAS_ALLOW_DELETE=1` (compose falls back to `DEVMODE`), need the body `{"confirm": "purge"}`, and are advertised as `delete_allowed` on `GET /health`. A job is deleted only if its id passes the strict charset, its directory is a real directory directly under the jobs dir (not a symlink) and it holds a `job.json`; an unreadable `job.json` can still be deleted.
+
+### Changed
+
+- The server tracks which jobs a route is writing (`POST /controls`, `POST /bake/stream`, `POST /tiles`) or deleting. A purge of a busy job is a 409, and so is a second bake or tiles run of a job that is already busy.
+
 ## [0.3.0] - 2026-11-13
 
 ### Added

@@ -300,6 +300,8 @@ Port 8105, a peer of the other suite servers. CORS from `ATLAS_CORS_ORIGINS`, de
 | `GET /jobs/{id}/preview/{kind}` | `hillshade`, `slope`, `land`, or `fantasy`. Ids only, no path input |
 | `GET /jobs/{id}/archive` | the PMTiles bytes |
 | `GET /jobs/{id}/labels` | the place-name GeoJSON written by `labels --job`. Read-only: the CLI builds it |
+| `POST /purge/{id}` | `{"confirm": "purge"}`: delete one job and its whole directory. 403 unless `ATLAS_ALLOW_DELETE=1`, 409 while it is baking or tiling |
+| `POST /purge` | `{"confirm": "purge"}`: delete every job that is not busy; returns `deleted` and `skipped` ids. Same flag |
 
 Progress events on the bake stream, in order: `controls`, `generate`, `georeference`, then `done` or `error`.
 
@@ -309,6 +311,8 @@ Progress events on the bake stream, in order: `controls`, `generate`, `georefere
 | `ATLAS_DEM_DIR` | `/data/dem` | Only DEMs under here can be named by the API |
 | `ATLAS_DEM_SOURCE` | `https://copernicus-dem-30m.s3.amazonaws.com` | Where the `dem` command finds GLO-30 tiles (a mirror URL or a local dir) |
 | `ATLAS_ALLOW_BAKE` | unset | `1` enables `POST /bake/stream` |
+| `ATLAS_ALLOW_OSM` | unset | `1` enables `POST /osm` |
+| `ATLAS_ALLOW_DELETE` | unset | `1` enables `POST /purge` and `POST /purge/{id}` (dev mode); `/health.delete_allowed` |
 | `ATLAS_BACKEND` | `comfyui` | Backend key |
 | `COMFYUI_BASE_URL` | `http://host.docker.internal:8188` | ComfyUI on the compose host |
 | `ATLAS_MODELS_DIR` | `/data/models` | Checkpoints and LoRAs, read-only, SHA256 recorded per job |

@@ -4,6 +4,8 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-13
+
 ### Added
 
 - `job.json` and its bake record carry `generator`: the argus-atlas package version and the full git commit that wrote them (#34). The controls and the bake each record their own, because a job can be baked by a later build than the one that built its controls. The bake payload embedded in every output adds `atlas_commit`, the mosaic manifest adds `generator`, `GET /health` adds `commit`, and `inspect` prints it. Sidecar schema `atlas_version` 0.4 (additive; older jobs read with `generator: null`). This lets a viewer such as Realms check that its imported docs and its tiles came from the same atlas build.

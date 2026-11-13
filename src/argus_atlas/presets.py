@@ -6,9 +6,9 @@ moderation surface), and so every output can say which preset made it (the
 name travels in :class:`~argus_atlas.models.BakeParams` and into the image
 metadata). Explicit values given alongside a preset win over the preset's.
 
-The six marked ``recommended`` held up on every AOI of the Lake Garda and
-Western Australia sweeps of October 2026 (see ``docs/first-bake.md``); the rest
-are kept for the right terrain. All assume the composite init image (water,
+The six marked ``recommended`` held up on every AOI of the October 2026 sweeps
+(a lake in the Alps, an urban coast, an island, a sound, an inland range; see
+``docs/styles.md``); the rest are kept for the right terrain. All assume the composite init image (water,
 forest, roads from OSM) and an SDXL checkpoint, no LoRA.
 """
 

@@ -6,7 +6,7 @@ Anything OGR can read works as a `controls --layer name=path` input, in any CRS;
 
 | Source | What | Used as |
 |---|---|---|
-| **Copernicus GLO-30** on AWS, `https://copernicus-dem-30m.s3.amazonaws.com/` | 30 m global DSM, 1x1° COG tiles, no login; sea at exactly 0 m | `argus-atlas dem --bbox … --out dem.tif` fetches and clips it, then `--dem` (`docs/first-bake.md`); `--sea-level 0` derives the `sea` mask from it. Attribution required (see `examples/README.md`). |
+| **Copernicus GLO-30** on AWS, `https://copernicus-dem-30m.s3.amazonaws.com/` | 30 m global DSM, 1x1° COG tiles, no login; sea at exactly 0 m | `argus-atlas dem --bbox … --out dem.tif` fetches and clips it, then `--dem` (`docs/your-first-bake.md`); `--sea-level 0` derives the `sea` mask from it. Attribution required (see `examples/README.md`). |
 | **OpenStreetMap via Overpass**, `https://overpass-api.de/api/interpreter` | Live OSM features for a bbox | `argus-atlas osm` / `POST /osm`: water, rivers, roads, rail, forest, urban, buildings, glaciers. Rate-limited: one call per AOI, pause between calls, reuse extracts. No ocean polygons (coastline is a line), hence the DEM sea mask. |
 | **OpenFreeMap**, `https://tiles.openfreemap.org/styles/liberty` | Vector basemap, no key | The viewer and flow pages' basemap. |
 
@@ -24,7 +24,7 @@ Anything OGR can read works as a `controls --layer name=path` input, in any CRS;
 | **HydroSHEDS**, `https://hydrosheds.org/products` | Rivers (HydroRIVERS), lakes (HydroLAKES), basins, with Strahler order and discharge; shapefile | Global `rivers`/`water` layers with scale filtering by stream order, more consistent than OSM in sparsely mapped areas. |
 | **Natural Earth**, `https://naturalearthdata.com` | 1:10m/50m/110m land, ocean, lakes, rivers, coastline, boundaries, places; shapefile/GeoJSON, public domain | A `land` polygon for coasts (`--land`) at zooms up to ~9; too coarse for the 1024 px canvases used so far. Also `glaciers`, `urban` areas, boundaries. Populated places (`ne_10m_populated_places`) are a `labels --source`, ranked by `SCALERANK`. |
 | **USGS EarthExplorer**, `https://earthexplorer.usgs.gov` | SRTM 1-arc-second, 3DEP (USA, down to 1 m), hydrography, boundaries; login | Alternative DEMs; 3DEP for US AOIs finer than 30 m. |
-| **Koordinates**, `https://koordinates.com` | Marketplace of government open data: LiDAR DEMs (NZ, parts of AU), coastlines, cadastre, imagery | Fine DEMs for Australian/NZ AOIs (e.g. WA 1–5 m LiDAR where published) and local coastline/water layers. |
+| **Koordinates**, `https://koordinates.com` | Marketplace of government open data: LiDAR DEMs (NZ, parts of AU), coastlines, cadastre, imagery | Fine DEMs for Australian/NZ AOIs (e.g. 1–5 m state LiDAR where published) and local coastline/water layers. |
 
 ## Land cover and forest
 

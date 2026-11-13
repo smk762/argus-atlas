@@ -4,6 +4,15 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 
 ## [Unreleased]
 
+### Added
+
+- `docs/cli.md`: every command and option, generated from the Typer app by `make docs`. CI's `docs` job fails when it no longer matches the CLI.
+- `docs/chunks-and-mosaic.md` (chunks, seams, recipes, blocks, the mosaic, place names: how the Realms map was made) and `docs/alignment-gate.md` (the grid-first contract, each check, and every step that gates again). The Realms "How it was made" panel links to these pages.
+
+### Changed
+
+- README: the chunk, mosaic and labels sections are shortened to a summary that links the new pages, and a docs index is under the status line. The HTTP API table adds `GET /presets`, `GET /inputs`, `POST /osm` and the `POST /controls`, `/bake/stream` and `/tiles` bodies, and gives every preview kind. The env table adds `ATLAS_ALLOW_OSM`, `ATLAS_OVERPASS_URL` and `ATLAS_RECIPES_DIR`. The preset count is corrected (seven: six recommended plus cyberpunk). "When it fails" quotes the messages the code actually prints. `serve --host`/`--allow-bake` and `chunks --dem-source`/`--max-tiles` are documented.
+
 ## [0.3.0] - 2026-11-13
 
 ### Added

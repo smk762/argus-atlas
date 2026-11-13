@@ -13,10 +13,10 @@ library only, so it runs anywhere: ``python3 -I fetch_civitai_lora.py ...``.
     CIVITAI_TOKEN=... python3 -I scripts/fetch_civitai_lora.py --out ./models 382959
 
     # then ship the tree to the GPU host, into the tree that holds the checkpoint
-    rsync -av ./models/loras/ morpheus:/srv/imogen/fast/models-hot/loras/
+    rsync -av ./models/loras/ <GPU_HOST>:<MODELS_DIR>/loras/
 
 Each file lands next to a ``<name>.civitai.json`` sidecar (the same convention
-as the checkpoints on morpheus) holding the model/version ids, base model,
+as the checkpoints on the GPU host) holding the model/version ids, base model,
 trigger words and licence flags. The SHA256 is checked against Civitai's when
 the API reports one.
 
@@ -275,7 +275,7 @@ def main() -> None:
         print(f"    ok  sha256={digest}  comfyui name: {args.subdir}/{slug(model['name'])}/{f['name']}")
 
     print(
-        f"\nship it:  rsync -av {args.out}/loras/ morpheus:/srv/imogen/fast/models-hot/loras/   "
+        f"\nship it:  rsync -av {args.out}/loras/ <GPU_HOST>:<MODELS_DIR>/loras/   "
         "(the tree that holds the checkpoint you bake with; atlas resolves one --models-dir)",
         file=sys.stderr,
     )

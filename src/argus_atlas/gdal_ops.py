@@ -238,9 +238,12 @@ def dem_clip_argv(
     ]
 
 
-def hillshade_argv(dem_3857: Path, dst: Path, *, azimuth: float = 315.0, altitude: float = 45.0) -> list[str]:
+def hillshade_argv(
+    dem_3857: Path, dst: Path, *, azimuth: float = 315.0, altitude: float = 45.0, z_factor: float = 1.0
+) -> list[str]:
     """Byte hillshade. ``-compute_edges`` keeps the border lit, so the model is
-    not handed a one-pixel black frame to imitate."""
+    not handed a one-pixel black frame to imitate. *z_factor* multiplies heights
+    (``-z``); 1 leaves the argv as it was before relief scaling existed."""
     return [
         "gdaldem",
         "hillshade",
@@ -249,6 +252,7 @@ def hillshade_argv(dem_3857: Path, dst: Path, *, azimuth: float = 315.0, altitud
         repr(azimuth),
         "-alt",
         repr(altitude),
+        *(["-z", repr(z_factor)] if z_factor != 1.0 else []),
         "-co",
         "COMPRESS=DEFLATE",
         str(dem_3857),
@@ -256,9 +260,11 @@ def hillshade_argv(dem_3857: Path, dst: Path, *, azimuth: float = 315.0, altitud
     ]
 
 
-def slope_argv(dem_3857: Path, dst: Path) -> list[str]:
-    """Slope in degrees (Float32)."""
-    return ["gdaldem", "slope", "-compute_edges", "-co", "COMPRESS=DEFLATE", str(dem_3857), str(dst)]
+def slope_argv(dem_3857: Path, dst: Path, *, z_factor: float = 1.0) -> list[str]:
+    """Slope in degrees (Float32). ``gdaldem slope`` has no ``-z``; its ``-s`` divides the
+    horizontal distances instead, so heights times *z_factor* is ``-s 1/z_factor``."""
+    scale = ["-s", repr(1.0 / z_factor)] if z_factor != 1.0 else []
+    return ["gdaldem", "slope", "-compute_edges", *scale, "-co", "COMPRESS=DEFLATE", str(dem_3857), str(dst)]
 
 
 def reproject_argv(

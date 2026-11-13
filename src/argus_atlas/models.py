@@ -35,6 +35,21 @@ DEFAULT_DENOISE = 0.55  # high enough to restyle, low enough that relief survive
 DEFAULT_STEPS = 30
 DEFAULT_CFG = 6.0
 DEFAULT_LORA_WEIGHT = 0.8
+# Height scaling before hillshade and slope: "auto" corrects for Web Mercator's horizontal stretch
+# (1/cos(latitude)); a number is the factor itself, and 1 is the uncorrected behaviour before 0.3.0.
+Z_FACTOR_AUTO = "auto"
+ZFactor = Literal["auto"] | float
+
+
+def check_z_factor(value: ZFactor) -> ZFactor:
+    """A positive finite factor, or ``"auto"``."""
+    if value == Z_FACTOR_AUTO:
+        return value
+    if isinstance(value, str) or not math.isfinite(value) or value <= 0:
+        raise ValueError(f"z_factor must be 'auto' or a positive number, got {value!r}")
+    return float(value)
+
+
 DEFAULT_SAMPLER = "dpmpp_2m"
 DEFAULT_SCHEDULER = "karras"
 # Labels and compass roses fight georeferencing and tile seams, so they are
@@ -299,6 +314,14 @@ class Recipe(BaseModel):
     sampler: str = DEFAULT_SAMPLER
     scheduler: str = DEFAULT_SCHEDULER
     seed: SeedScheme = Field(default_factory=SeedScheme)
+    # Relief: see ReliefRecord. Both are in the recipe digest, so chunks with other relief are not neighbours.
+    z_factor: ZFactor = Z_FACTOR_AUTO
+    vertical_exaggeration: float = Field(default=1.0, gt=0, allow_inf_nan=False)
+
+    @field_validator("z_factor")
+    @classmethod
+    def _z_factor(cls, value: ZFactor) -> ZFactor:
+        return check_z_factor(value)
 
 
 class RecipeRecord(BaseModel):
@@ -358,6 +381,41 @@ class ChunkRecord(BaseModel):
         return f"{self.z}/{self.x}/{self.y}"
 
 
+class ReliefRecord(BaseModel):
+    """How the DEM's heights were scaled for ``gdaldem hillshade`` and ``gdaldem slope``.
+
+    Web Mercator stretches horizontal distances by 1/cos(latitude), so on the EPSG:3857
+    canvas the same hill is wider and flatter the further it is from the equator. ``auto``
+    multiplies heights by that factor at the canvas centre (*base*), which restores the
+    true slope; a fixed *z_factor* is used as given (1 = no correction). The user's
+    *vertical_exaggeration* applies on top: ``z_factor = base * vertical_exaggeration``,
+    passed to hillshade as ``-z`` and to slope as ``-s 1/z``.
+    """
+
+    mode: Literal["auto", "fixed"]
+    latitude: float
+    base: float = Field(gt=0)
+    vertical_exaggeration: float = Field(gt=0)
+    z_factor: float = Field(gt=0)
+
+
+def relief_key(relief: ReliefRecord | None) -> tuple[str, float]:
+    """What must match for chunks to share seams or a mosaic: ``auto`` and its exaggeration
+    (the base follows each chunk's latitude), or the fixed factor. None is a pre-0.3.0 job, fixed 1."""
+    if relief is None:
+        return ("fixed", 1.0)
+    if relief.mode == "auto":
+        return ("auto", round(relief.vertical_exaggeration, 6))
+    return ("fixed", round(relief.z_factor, 6))
+
+
+def relief_key_for(z_factor: ZFactor, vertical_exaggeration: float) -> tuple[str, float]:
+    """:func:`relief_key` of the relief these settings will produce."""
+    if z_factor == Z_FACTOR_AUTO:
+        return ("auto", round(vertical_exaggeration, 6))
+    return ("fixed", round(float(z_factor) * vertical_exaggeration, 6))
+
+
 class LabelsRecord(BaseModel):
     """Place names for the drape: a GeoJSON overlay the viewer draws over the raster.
 
@@ -399,6 +457,8 @@ class JobSidecar(BaseModel):
     chunk: ChunkRecord | None = None
     recipe: RecipeRecord | None = None
     labels: LabelsRecord | None = None
+    # How heights were scaled for hillshade/slope. None: a job from before 0.3.0, unscaled (z 1).
+    relief: ReliefRecord | None = None
     # Wall-clock seconds per stage (controls, seams, verify, generate, georeference, crop, tiles).
     timings: dict[str, float] = Field(default_factory=dict)
 

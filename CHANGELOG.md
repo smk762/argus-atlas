@@ -4,6 +4,18 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-13
+
+### Added
+
+- Relief scaling for `controls`, `chunk`, `chunks` and `POST /controls`. `--z-factor auto` is the default: it multiplies heights by 1/cos(latitude) at the canvas centre before `gdaldem hillshade` (`-z`) and `gdaldem slope` (`-s 1/z`). This undoes Web Mercator's horizontal stretch, so relief far from the equator is no longer flattened (×1.33 at 41°, ×2.37 at 65°). `--vertical-exaggeration` / `--ve` multiplies on top for cartographic exaggeration. `--z-factor off` (or `1`, or any fixed number) turns the correction off. `job.json` records a `relief` record (mode, latitude, base factor, exaggeration, effective z; additive, sidecar schema `atlas_version` 0.3). See `docs/relief.md`.
+- Recipes gain `z_factor` (default `"auto"`) and `vertical_exaggeration` (default 1), and both are in the recipe digest. **Chunks baked before this release do not match a recipe that leaves them at their defaults**, so `chunks` re-bakes them. To extend an existing block with its old relief, add `"z_factor": 1` to the recipe: z 1 with no exaggeration keeps the old digest. `chunk` refuses a neighbour with other relief, and `mosaic` refuses a style dir that mixes reliefs.
+
+### Changed
+
+- Docs cleanup: `docs/first-bake.md` is replaced by `docs/your-first-bake.md`, a first bake on a GPU host written against the `.env` placeholders, and `docs/styles.md`, what the sweeps showed about denoise, prompts, checkpoints, the composite, the presets and chunk seams. `.env.example` and `scripts/fetch_civitai_lora.py` use placeholders for host paths.
+- README: the hero is the Cook Strait chunk mosaic the Realms demo shows, in two styles; "Live demo" links [Realms](https://realms.dragonhound.dev) and [Argus Studio](https://studio.dragonhound.dev/atlas/); every image and doc link is an absolute GitHub URL so the PyPI page renders them; the links to agent and planning files are gone.
+
 ## [0.3.0a1] - 2026-10-31
 
 ### Added
@@ -84,7 +96,7 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 - `controls --sea-level <m>`: a `sea` mask of DEM cells at or below a level (Copernicus GLO-30 puts the sea at 0), painted as water in the composite — OSM has no ocean polygons.
 - Workflow templates may use any control as a `$<name>` placeholder; the packaged `comfyui_sdxl_img2img_composite_nolora.json` uses `$composite` as the img2img init and `$hillshade` for the ControlNet.
 - ComfyUI backend fails fast when a queued prompt disappears from both `/queue` and `/history` (ComfyUI restarted mid-bake) instead of waiting out the bake timeout.
-- `docs/first-bake.md`: the morpheus runbook, amended with the first real bake (Lake Garda, Copernicus GLO-30), LoRA, prompt, checkpoint and denoise sweeps, and contact sheets under `docs/img/`.
+- `docs/first-bake.md`: the GPU-host runbook, amended with the first real bake (Lake Garda, Copernicus GLO-30), LoRA, prompt, checkpoint and denoise sweeps, and contact sheets under `docs/img/`.
 
 ### Fixed
 

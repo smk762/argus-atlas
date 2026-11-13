@@ -18,10 +18,10 @@ Settled decisions are summarised in `CLAUDE.md` (What this is) and the README's 
 
 ## Phase 1: first real bake becomes the hero asset
 
-- [x] Pick a recognisable AOI with strong relief and a coastline (Lake Garda; then Rockingham, Rottnest, Albany, Stirling Range, 23 Oct 2026)
-- [x] Bake it. Job dirs kept under `/home/smk/argus/atlas-jobs` on morpheus; contact sheets in `docs/img/`
-- [x] Side-by-side hero (`docs/img/hero.jpg`: hillshade, composite, bake of Albany) at the top of the README via an absolute raw.githubusercontent.com URL (23 Oct 2026)
-- [x] Opacity GIF (`docs/img/hero-drape.gif`, viewer.html over OpenFreeMap, 18 frames) in the README (23 Oct 2026)
+- [x] Pick a recognisable AOI with strong relief and a coastline (Lake Garda, then a coastal series, 23 Oct 2026; Cook Strait chunk block for the Realms demo)
+- [x] Bake it. Job dirs kept on the GPU host; contact sheets in `docs/img/`
+- [x] Side-by-side hero (`docs/img/hero-cook-strait.jpg`: the Cook Strait chunk mosaic in two styles) at the top of the README via an absolute raw.githubusercontent.com URL
+- [ ] Opacity GIF of the Cook Strait drape (viewer.html over OpenFreeMap) in the README; until then the README links the Realms demo
 - [x] Bundle a tiny sample DEM in `examples/` (`sample_dem.tif`, Copernicus GLO-30 clip, 350 KB, attributed) and make the README quick-start run against it with no edits (23 Oct 2026)
 
 ## Phase 2: make the PyPI page convert

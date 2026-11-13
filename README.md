@@ -2,26 +2,18 @@
 
 [![PyPI](https://img.shields.io/pypi/v/argus-atlas.svg)](https://pypi.org/project/argus-atlas/)
 [![Python](https://img.shields.io/pypi/pyversions/argus-atlas.svg)](https://pypi.org/project/argus-atlas/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/smk762/argus-atlas/blob/main/LICENSE)
 [![CI](https://github.com/smk762/argus-atlas/actions/workflows/ci.yml/badge.svg)](https://github.com/smk762/argus-atlas/actions/workflows/ci.yml)
 
 Bake one georeferenced fantasy-map overlay from real terrain.
 
 `argus-atlas` warps a DEM into hillshade, slope, and land-mask control rasters with GDAL, restyles them through a diffusion backend with a cartography LoRA, stamps the painted pixels back onto the original geotransform, and cuts a PMTiles archive you can drape on a real map.
 
-![Albany, Western Australia: DEM hillshade, the OSM composite, and the baked antique map, same extent](https://raw.githubusercontent.com/smk762/argus-atlas/main/docs/img/hero.jpg)
+![Cook Strait, New Zealand, baked as a block of z10 chunks in two styles: antique (top) and tolkien (bottom)](https://raw.githubusercontent.com/smk762/argus-atlas/main/docs/img/hero-cook-strait.jpg)
 
-King George Sound at Albany, Western Australia: the Copernicus GLO-30 hillshade, the composite control (hillshade plus OpenStreetMap water, forest and roads, with the sea taken from the DEM), and the bake. Same 1024x1024 canvas at 33 m/px, native zoom 12. Preset `antique`, seed 7, 30 steps, cfg 6, denoise 0.6, Juggernaut XL, no LoRA. The prompt, read back from the PNG's own EXIF:
+Cook Strait, New Zealand: the Marlborough Sounds on the left, Wellington and the Wairarapa on the right, as the [Realms demo](https://realms.dragonhound.dev) shows it. Each style is a block of 1024 px z10 chunks (`argus-atlas chunks`, 128 px seam margin, native zoom 12, 38 m/px) from Copernicus GLO-30 and OpenStreetMap layers, mosaicked into one tile set (`argus-atlas mosaic`). Juggernaut XL, no LoRA, 30 steps, cfg 6: preset `antique` at denoise 0.6 (top) and `tolkien` at 0.7 (bottom), seeds derived from each recipe and tile. Every chunk passed the alignment gate twice, once for its canvas and once for its crop, so coastlines run on across the seams and sit on the real ones when the layer is draped over a basemap.
 
-> antique fantasy map, ink coastlines, parchment, illustrated relief, blue water, no text, no labels, no compass rose
->
-> negative: text, watermark, letters, words, frame, border, photograph, satellite
-
-![The overlay fading from the painted map to the real basemap and back: coastline and harbours stay put](https://raw.githubusercontent.com/smk762/argus-atlas/main/docs/img/hero-drape.gif)
-
-The GIF is `examples/viewer.html` sliding the overlay's opacity over an OpenFreeMap basemap. The coastline, the sound and the harbours do not move, because the model only ever painted pixels inside a frame GDAL had already georeferenced.
-
-**Status:** v0, first alpha being prepared. Real AOIs have passed the alignment gate (Lake Garda on 17 Oct 2026; four Western Australian AOIs on 23 Oct); see [`docs/first-bake.md`](https://github.com/smk762/argus-atlas/blob/main/docs/first-bake.md).
+**Status:** 0.x, pre-1.0: the CLI and `job.json` may still change between minor versions. Real AOIs pass the alignment gate, from single canvases (Lake Garda, October 2026) to blocks of seam-aware chunks (Cook Strait). [`docs/your-first-bake.md`](https://github.com/smk762/argus-atlas/blob/main/docs/your-first-bake.md) walks through a first bake on a GPU host; [`docs/styles.md`](https://github.com/smk762/argus-atlas/blob/main/docs/styles.md) covers the knobs that matter.
 
 Part of the [Argus suite](https://github.com/smk762?tab=repositories&q=argus).
 
@@ -118,7 +110,10 @@ The source is a file you already have: Natural Earth populated places (ranked by
 
 ## Live demo
 
-A hosted demo will be linked here. Until then, [`examples/flow.html`](https://github.com/smk762/argus-atlas/blob/main/examples/flow.html) runs the whole flow against a local server (AOI, OSM layers, controls, bake, tiles, drape) and [`examples/viewer.html`](https://github.com/smk762/argus-atlas/blob/main/examples/viewer.html) drapes any baked job on a MapLibre basemap with an opacity slider: start `argus-atlas serve --cors` (with `ATLAS_CORS_ORIGINS='*'`) and open the page, or feed it a `fantasy.pmtiles` directly. The first real AOI (Lake Garda, Copernicus GLO-30, Juggernaut XL, no LoRA) passed the alignment gate on 17 Oct 2026; the commands are in [`docs/first-bake.md`](https://github.com/smk762/argus-atlas/blob/main/docs/first-bake.md).
+- **[Realms](https://realms.dragonhound.dev)** drapes the Cook Strait chunk mosaic above over an OpenFreeMap basemap, with a style switch and an opacity slider: slide it to see the painted coastline sit on the real one.
+- **[Argus Studio](https://studio.dragonhound.dev/atlas/)** is the suite's web UI; its Atlas page is a thin shell over this package's API.
+
+To run it yourself, [`examples/flow.html`](https://github.com/smk762/argus-atlas/blob/main/examples/flow.html) runs the whole flow against a local server (AOI, OSM layers, controls, bake, tiles, drape) and [`examples/viewer.html`](https://github.com/smk762/argus-atlas/blob/main/examples/viewer.html) drapes any baked job on a MapLibre basemap with an opacity slider: start `argus-atlas serve --cors` (with `ATLAS_CORS_ORIGINS='*'`) and open the page, or feed it a `fantasy.pmtiles` directly. The first real AOI (Lake Garda, Copernicus GLO-30, Juggernaut XL, no LoRA) passed the alignment gate on 17 Oct 2026; [`docs/your-first-bake.md`](https://github.com/smk762/argus-atlas/blob/main/docs/your-first-bake.md) has the commands for your own.
 
 ## Quick start
 
@@ -158,8 +153,8 @@ Open `jobs/sample/hillshade.png`. If the relief looks right, the georeferencing 
 | You have | Do this |
 |---|---|
 | **A local GPU with ComfyUI running** | `ATLAS_ALLOW_BAKE=1 argus-atlas bake ./jobs/sample --checkpoint ... --lora ...` as in the operator workflow below. The packaged ComfyUI workflow template is the starting graph; drop in your own. |
-| **No GPU** | Run `controls` and `tiles` locally. A hosted notebook that runs the bake against a remote ComfyUI is planned (see `TODO.md`, Phase 4). |
-| **ComfyUI, and you want to own the graph** | Start from `src/argus_atlas/templates/comfyui_sdxl_img2img_control.json`, keep the `$placeholders`, and point `ATLAS_WORKFLOW` at your copy. `bake` submits it, then stamps and gates the result. A standalone command for stamping a PNG painted outside atlas is on the roadmap (see `TODO.md`). |
+| **No GPU** | Run `controls` and `tiles` locally. A hosted notebook that runs the bake against a remote ComfyUI is planned (on the roadmap). |
+| **ComfyUI, and you want to own the graph** | Start from `src/argus_atlas/templates/comfyui_sdxl_img2img_control.json`, keep the `$placeholders`, and point `ATLAS_WORKFLOW` at your copy. `bake` submits it, then stamps and gates the result. A standalone command for stamping a PNG painted outside atlas is on the roadmap. |
 
 ## Where it sits in the Argus suite
 
@@ -255,6 +250,7 @@ jobs/aoi-1/
 | Prompt | `antique fantasy map, ink coastlines, parchment, illustrated relief, no text, no labels, no compass rose` | Labels and roses fight georeferencing and tile seams. |
 | Negative | `text, watermark, letters, words, frame, border, photograph, satellite` | |
 | Zoom range | native-2 through native, clipped to 0–14 | Native is the Web Mercator zoom closest to the canvas ground resolution. |
+| Z factor | `auto` | Heights scaled by 1/cos(latitude) before hillshade and slope, undoing Web Mercator's horizontal stretch (×1.33 at 41°, ×2.37 at 65°). `--z-factor off` restores the uncorrected relief; `--vertical-exaggeration` multiplies on top. See [`docs/relief.md`](https://github.com/smk762/argus-atlas/blob/main/docs/relief.md). |
 
 ControlNet choice and weight live in the ComfyUI workflow template, not in Python. The packaged template is a starting point the operator replaces.
 
@@ -365,8 +361,6 @@ Versioning is derived from git tags via `hatch-vcs`.
 4. Once approved, rename the heading to `[X.Y.Z]`, merge the PR, and tag `vX.Y.Z` on `main`. Only finals move `:latest` and the `:X.Y` image tag.
 
 `main` only changes through a PR with green CI. CI is a standalone workflow that apt-installs `gdal-bin` and `python3-gdal` before running the suite, since the tests drive real GDAL on a synthetic DEM. Release publishes to PyPI (OIDC trusted publishing) and GHCR on `v*` tags. This repo was scaffolded from [`argus-pkg-template`](https://github.com/smk762/argus-pkg-template); run `copier update` to pull template changes.
-
-The launch and onboarding plan lives in [TODO.md](TODO.md). Agents working in this repo should read [CLAUDE.md](CLAUDE.md) first.
 
 ## Community and help
 

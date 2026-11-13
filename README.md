@@ -237,11 +237,11 @@ Before a GeoTIFF or any tile is written, all of the following must hold:
 - SRS is EPSG:3857.
 - Corner coordinates match the sidecar within 1e-3 map units.
 
-On failure the PNG is kept, no GeoTIFF is written, and the command exits non-zero. `tiles` runs the gate again, and a chunk is gated twice more: once with its seam blend and once as the cropped tile. See [`docs/alignment-gate.md`](https://github.com/smk762/argus-atlas/blob/main/docs/alignment-gate.md).
+On failure the PNG is kept, no GeoTIFF is written, and the command exits non-zero. `tiles` runs the gate again, and a chunk is gated again as the cropped tile, plus once more on its seam blend when it has baked neighbours. See [`docs/alignment-gate.md`](https://github.com/smk762/argus-atlas/blob/main/docs/alignment-gate.md).
 
 ## When it fails
 
-The three failures new users hit, and what to do:
+The failures new users hit most, and what to do:
 
 | Message | Cause | Fix |
 |---|---|---|
@@ -322,6 +322,7 @@ docker compose build          # after pulling: `run` and `up` reuse an existing 
 make install   # uv sync --locked: editable install from uv.lock with all extras
 make test
 make lint
+make docs   # regenerate docs/cli.md after changing the CLI; CI's docs job fails if it is stale
 docker compose --profile test run --rm test   # the suite against real GDAL, no host install
 ```
 

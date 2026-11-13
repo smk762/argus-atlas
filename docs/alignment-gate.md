@@ -34,7 +34,7 @@ The gate is not a one-off. Every step that writes georeferenced output re-runs i
 | Step | Gated file | Grid |
 |---|---|---|
 | `bake` | `fantasy.tif` | the job's canvas |
-| `chunk`, seam blend | `fantasy_blend.tif` | the chunk's canvas, margin included |
+| `chunk`, seam blend (only with baked neighbours, and `--feather` above 0 or `--tone`) | `fantasy_blend.tif` | the chunk's canvas, margin included |
 | `chunk`, crop | `fantasy_chunk.tif` | the chunk's own XYZ tile, margin removed |
 | `tiles` / `POST /tiles` | the GeoTIFF being tiled | the canvas, or the chunk's tile |
 

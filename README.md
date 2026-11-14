@@ -330,14 +330,14 @@ docker compose --profile test run --rm test   # the suite against real GDAL, no 
 
 Versioning is derived from git tags via `hatch-vcs`.
 
-**Branches and releases.** Work lands on `dev` (the default branch) through PRs, and `main` must never be ahead of `dev`. Branch from `origin/dev` and never push to `main` directly. Because `main` is protected, a release is a PR from `dev` into `main`:
+**Branches and releases.** Work lands on `dev` (the default branch) through PRs, and `main` must never be ahead of `dev`, except by a release PR's merge commit (step 4). Branch from `origin/dev` and never push to `main` directly. Because `main` is protected, a release is a PR from `dev` into `main`:
 
 1. Cut the CHANGELOG on `dev`: rename `[Unreleased]` to `[X.Y.Zrc1] - <date>`, then open the `dev` → `main` PR.
 2. Tag `vX.Y.Zrc1` on the PR's head commit. That publishes a pre-release to PyPI, GHCR (`:X.Y.Zrc1`, never `:latest`) and GitHub Releases, so the exact commit under review can be installed and baked with.
 3. Fixes go to `dev` and get `rc2`, `rc3`, …, each with its own CHANGELOG heading.
-4. Once approved, rename the heading to `[X.Y.Z]`, merge the PR, then immediately merge `main` back into `dev` (`git switch dev && git merge --ff-only origin/main` if possible, otherwise a merge commit) so the release merge commit is not left on `main` alone. Tag `vX.Y.Z` on `main`. Only finals move `:latest` and the `:X.Y` image tag.
+4. Once approved, rename the heading to `[X.Y.Z]` and merge the PR. Its merge commit stays on `main` alone, one commit ahead of `dev` with an identical tree: that is the one exception to the rule, so don't merge `main` back into `dev`. Anything else on `main` that `dev` lacks is a mistake (`git diff origin/dev origin/main` must be empty). Tag `vX.Y.Z` on `main`. Only finals move `:latest` and the `:X.Y` image tag.
 
-If `main` stops requiring a PR, a release instead fast-forwards it to a `dev` commit that passed CI (`git push origin origin/dev:main`) and tags it there.
+If `main` stops requiring a PR, a release instead fast-forwards it to a `dev` commit that passed CI (`git push origin origin/dev:main`) and tags it there. That needs `main` to be an ancestor of `dev`, which a release merge commit prevents, so once one exists releases stay PRs.
 
 `main` only changes through a PR with green CI. CI is a standalone workflow that apt-installs `gdal-bin` and `python3-gdal` before running the suite, since the tests drive real GDAL on a synthetic DEM. Release publishes to PyPI (OIDC trusted publishing) and GHCR on `v*` tags. This repo was scaffolded from [`argus-pkg-template`](https://github.com/smk762/argus-pkg-template); run `copier update` to pull template changes.
 

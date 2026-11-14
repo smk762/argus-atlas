@@ -6,7 +6,7 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 
 ### Added
 
-- The README's Realms entry links Realms' row in the suite's [What to run for which UI](https://studio.dragonhound.dev/docs/setup/which-services/#realms) matrix.
+- The README's Realms entry links Realms' row in the suite's [What to run for which UI](https://docs.dragonhound.dev/setup/which-services/#realms) matrix.
 
 ### Fixed
 

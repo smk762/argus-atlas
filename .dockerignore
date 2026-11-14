@@ -1,6 +1,7 @@
 # NOTE: .git is deliberately *not* ignored -- hatch-vcs reads the version from
-# git history at build time. Set `version_build_arg` if you want it excluded.
-.github
+# git history at build time. So nothing tracked may be ignored here either: git
+# would see it deleted and version the image as a dirty dev build (#50). Check
+# with `git ls-files -ci --exclude-from=.dockerignore`, which must print nothing.
 .venv
 venv
 dist
@@ -14,8 +15,10 @@ build
 .coverage
 htmlcov
 
-# Local data, job output and settings: mounted at run time, never baked into the image
+# Local data, job output and settings: mounted at run time, never baked into the image.
+# data/<dir>/.gitkeep is tracked, so only what sits beside it is ignored.
 .env
-data
-jobs
-output
+data/*/*
+!data/*/.gitkeep
+/jobs
+/output

@@ -8,6 +8,10 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 
 - The README's Realms entry links Realms' row in the suite's [What to run for which UI](https://studio.dragonhound.dev/docs/setup/which-services/#realms) matrix.
 
+### Fixed
+
+- **The image reports the release's version** (#50). `.dockerignore` left the tracked `.github/` and `data/*/.gitkeep` out of the build context while keeping `.git`, so hatch-vcs saw a dirty tree and versioned the image `X.Y.(Z+1).dev0+g<sha>.d<date>` even on a release tag. Nothing tracked is ignored any more, the release passes the tag to the build as `VERSION` (set as `SETUPTOOLS_SCM_PRETEND_VERSION` only while argus-atlas's own wheel is built), and the release fails if the pushed image's `/health.version` is not the tag.
+
 ## [0.3.1] - 2026-11-13
 
 ### Added

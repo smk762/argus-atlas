@@ -1,4 +1,9 @@
-# argus-atlas
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/smk762/argus-cortex/dev/brand/packages/atlas/argus-atlas-lockup-dark.svg">
+    <img alt="argus-atlas" src="https://raw.githubusercontent.com/smk762/argus-cortex/dev/brand/packages/atlas/argus-atlas-lockup-light.svg" height="52">
+  </picture>
+</h1>
 
 [![PyPI](https://img.shields.io/pypi/v/argus-atlas.svg)](https://pypi.org/project/argus-atlas/)
 [![Python](https://img.shields.io/pypi/pyversions/argus-atlas.svg)](https://pypi.org/project/argus-atlas/)

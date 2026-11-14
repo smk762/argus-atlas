@@ -80,7 +80,7 @@ Place names never reach the model, which paints illegible lettering. `argus-atla
 
 ## Live demo
 
-- **[Realms](https://realms.dragonhound.dev)** drapes the Cook Strait chunk mosaic above over an OpenFreeMap basemap, with a style switch and an opacity slider: slide it to see the painted coastline sit on the real one.
+- **[Realms](https://realms.dragonhound.dev)** drapes the Cook Strait chunk mosaic above over an OpenFreeMap basemap, with a style switch and an opacity slider: slide it to see the painted coastline sit on the real one. What it needs live and how it is made: [What to run for which UI](https://studio.dragonhound.dev/docs/setup/which-services/#realms).
 - **[Argus Studio](https://studio.dragonhound.dev/atlas/)** is the suite's web UI; its Atlas page is a thin shell over this package's API.
 
 To run it yourself, [`examples/flow.html`](https://github.com/smk762/argus-atlas/blob/main/examples/flow.html) runs the whole flow against a local server (AOI, OSM layers, controls, bake, tiles, drape) and [`examples/viewer.html`](https://github.com/smk762/argus-atlas/blob/main/examples/viewer.html) drapes any baked job on a MapLibre basemap with an opacity slider: start `argus-atlas serve --cors` (with `ATLAS_CORS_ORIGINS='*'`) and open the page, or feed it a `fantasy.pmtiles` directly. The first real AOI (Lake Garda, Copernicus GLO-30, Juggernaut XL, no LoRA) passed the alignment gate on 17 Oct 2026; [`docs/your-first-bake.md`](https://github.com/smk762/argus-atlas/blob/main/docs/your-first-bake.md) has the commands for your own.

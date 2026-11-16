@@ -7,15 +7,14 @@ artifact by ``(job_id, kind)`` and never resolves a client-supplied path.
 
 from __future__ import annotations
 
-import re
 import secrets
 import shutil
 import time
 from pathlib import Path
 
-from argus_atlas.models import COMPOSITE_KIND, SIDECAR_NAME, AtlasError, JobDigest, JobSidecar
+from argus_cortex.fs import PathRefused, safe_name
 
-_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+from argus_atlas.models import COMPOSITE_KIND, SIDECAR_NAME, AtlasError, JobDigest, JobSidecar
 
 # Fixed preview names; any other kind is looked up in the job's controls.
 PREVIEW_FILES: dict[str, str] = {"fantasy": "fantasy.png"}
@@ -26,7 +25,13 @@ CONTROL_STAGES: frozenset[str] = frozenset({"controls", "seams"})
 
 
 def is_safe_id(value: str) -> bool:
-    return bool(value) and value not in {".", ".."} and _SAFE_ID.match(value) is not None
+    """One path segment: starts alphanumeric, then letters, digits, ``.``, ``_`` or ``-`` (argus-cortex's
+    :func:`~argus_cortex.fs.safe_name`, which matches the whole string, so a trailing newline is refused)."""
+    try:
+        safe_name(value)
+    except PathRefused:
+        return False
+    return True
 
 
 def require_safe_id(value: str, label: str = "job id") -> str:

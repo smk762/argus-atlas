@@ -8,6 +8,10 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 
 - The README's Realms entry links Realms' row in the suite's [What to run for which UI](https://docs.dragonhound.dev/setup/which-services/#realms) matrix.
 
+### Changed
+
+- **Job, recipe and mosaic ids are checked by argus-cortex's `fs.safe_name`** (argus-cortex 0.8, ai-code-auditor#56): the same rule as before (start alphanumeric, then letters, digits, `.`, `_` or `-`), now matched against the whole string and capped at 128 characters. argus-cortex is pinned `>=0.8,<0.9`.
+
 ### Fixed
 
 - **The image reports the release's version** (#50). `.dockerignore` left the tracked `.github/` and `data/*/.gitkeep` out of the build context while keeping `.git`, so hatch-vcs saw a dirty tree and versioned the image `X.Y.(Z+1).dev0+g<sha>.d<date>` even on a release tag. Nothing tracked is ignored any more, the release passes the tag to the build as `VERSION` (set as `SETUPTOOLS_SCM_PRETEND_VERSION` only while argus-atlas's own wheel is built), and the release fails if the pushed image's `/health.version` is not the tag.

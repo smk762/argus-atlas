@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.12' and sys_platform == 'emscripten'",
@@ -71,8 +71,8 @@ tiles = [
 
 [package.metadata]
 requires-dist = [
-    { name = "argus-cortex", specifier = ">=0.2.0" },
-    { name = "argus-cortex", extras = ["server"], marker = "extra == 'server'", specifier = ">=0.2.0" },
+    { name = "argus-cortex", specifier = ">=0.8,<0.9" },
+    { name = "argus-cortex", extras = ["server"], marker = "extra == 'server'", specifier = ">=0.8,<0.9" },
     { name = "certifi", marker = "extra == 'dev'", specifier = ">=2026.10.19" },
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.110" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
@@ -92,14 +92,14 @@ provides-extras = ["cli", "dev", "server", "tiles"]
 
 [[package]]
 name = "argus-cortex"
-version = "0.2.0"
+version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/23/7a/d3e10c87639634125c3b3b575d8f3a5ef19725ea042047d4a8397eca7888/argus_cortex-0.2.0.tar.gz", hash = "sha256:e814ccd79f4a036899fd7e1cbd6b5065de1bad9c57aa8a927792d0cd520c9f1d", size = 46610, upload-time = "2026-07-21T05:50:46.19Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f2/3a/31193a0d5ea43aae655d52c803597ef60c5f94dd3934d65b84c1f636650a/argus_cortex-0.8.0.tar.gz", hash = "sha256:85c82d50219f3bf00e0d7dfe9838f4da86ceeefe2b0eca479a7b2a53a0003d9b", size = 183014, upload-time = "2026-11-16T15:38:05.96Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b4/c6/4d264c29a75c0dd97adb0bb72dec7282c6b5e77c68d552de8d5907367726/argus_cortex-0.2.0-py3-none-any.whl", hash = "sha256:0c584c369c8ec6731259322ce5da33d5ce6f02351fb288be01d363197d01faba", size = 38308, upload-time = "2026-07-21T05:50:44.958Z" },
+    { url = "https://files.pythonhosted.org/packages/44/17/5c985db1566aba4a9f0b3a9d1704123e5c78a1377f6ec3e15f51e7fd3306/argus_cortex-0.8.0-py3-none-any.whl", hash = "sha256:d981ac7de96c5985f5b032dbc85981e4fcd54d1e3e227fc7ea3b15d540543d57", size = 107214, upload-time = "2026-11-16T15:38:04.604Z" },
 ]
 
 [package.optional-dependencies]
@@ -178,8 +178,8 @@ name = "httpcore2"
 version = "2.13.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "h11" },
-    { name = "truststore" },
+    { name = "h11", marker = "python_full_version < '3.12' or sys_platform != 'emscripten'" },
+    { name = "truststore", marker = "python_full_version < '3.12' or sys_platform != 'emscripten'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/cb/f3/1db7aa2bc2524062192bb0e0323969492d1883152a232fe36eea65f4e35c/httpcore2-2.13.1.tar.gz", hash = "sha256:e0aa977abe17e69a3b820a24542a6fa88702676d83880b8d194dcd18408e5103", size = 68071, upload-time = "2026-09-23T07:47:22.372Z" }
 wheels = [

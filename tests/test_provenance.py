@@ -50,6 +50,14 @@ def test_built_commit_is_the_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
         provenance.generator.cache_clear()
 
 
+def test_built_commit_with_a_trailing_newline_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    monkeypatch.setitem(sys.modules, "argus_atlas._build_info", types.SimpleNamespace(COMMIT=sha + "\n"))
+    assert provenance._built_commit() is None
+    monkeypatch.setitem(sys.modules, "argus_atlas._build_info", types.SimpleNamespace(COMMIT=sha))
+    assert provenance._built_commit() == sha
+
+
 def test_hatch_hook_reads_git(tmp_path: Path) -> None:
     sys.path.insert(0, str(REPO))
     try:

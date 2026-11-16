@@ -11,6 +11,7 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 ### Changed
 
 - **Job, recipe and mosaic ids are checked by argus-cortex's `fs.safe_name`** (argus-cortex 0.8, ai-code-auditor#56): the same rule as before (start alphanumeric, then letters, digits, `.`, `_` or `-`), now matched against the whole string and capped at 128 characters. argus-cortex is pinned `>=0.8,<0.9`.
+- **The build commit check uses `fullmatch`** (argus-cortex's `fullmatch` codemod, ai-code-auditor#56), so `provenance` accepts a commit only when the whole string is a 7–40 character hex sha. With `match`, `$` also matched before a trailing newline, so a `_build_info.COMMIT` ending in `\n` was recorded as the commit.
 
 ### Fixed
 

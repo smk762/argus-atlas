@@ -7,6 +7,7 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 ### Added
 
 - The README's Realms entry links Realms' row in the suite's [What to run for which UI](https://docs.dragonhound.dev/setup/which-services/#realms) matrix.
+- **GPU leases through the argus-iris broker** (#54). Every bake holds a `batch` lease on `comfyui` (kind `bake`) from argus-cortex's coordinator, configured host-wide by `ARGUS_GPU_*`; unset is no gating, as before. The prompt goes to the ComfyUI the grant names. `chunks` holds one lease across the block, checks `should_yield()` before each chunk, and re-queues on the same node when the broker asks. A refused or timed-out lease is a `BackendError` that says so. `gpu-tenant.yaml` declares the kind and ships in the image at `/app/gpu-tenant.yaml`; compose passes the `ARGUS_GPU_*` variables through. argus-cortex now comes with its `[remote,yaml]` extras (httpx, PyYAML).
 
 ### Changed
 

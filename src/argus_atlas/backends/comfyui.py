@@ -6,16 +6,24 @@ render the workflow template with the operator's knobs, submit it
 (``/view``) and write it as the job's PNG — refusing an image that is not
 exactly the canvas size. No weights live in this package; ComfyUI loads the
 checkpoint and LoRA by name from its own model dirs.
+
+Each ``generate`` holds a GPU lease on ``comfyui`` (:mod:`argus_atlas.gpu`) for
+that round trip, or runs under the block's lease when :meth:`ComfyUIBackend.gpu_session`
+is open. When the grant names a ComfyUI ``base_url``, the prompt goes there.
 """
 
 from __future__ import annotations
 
+import contextlib
 import time
 import urllib.parse
+from collections.abc import Iterator
 from pathlib import Path
 
 import structlog
+from argus_cortex.gpu import GpuCoordinator
 
+from argus_atlas import gpu
 from argus_atlas.backends.base import BackendError, BackendStatus, BakeOutput, BakeRequest, StatusSink
 from argus_atlas.backends.http import Transport, UrllibTransport
 from argus_atlas.backends.workflow import (
@@ -47,6 +55,8 @@ class ComfyUIBackend:
         timeout: float = 1200.0,
         request_timeout: float = 180.0,
         vanish_after: float = 30.0,
+        gpu_coordinator: GpuCoordinator | None = None,
+        priority: gpu.PriorityClass = gpu.DEFAULT_PRIORITY,
     ) -> None:
         # request_timeout is per HTTP call; `timeout` bounds the whole bake —
         # ComfyUI can stall for minutes while a checkpoint first loads.
@@ -56,10 +66,16 @@ class ComfyUIBackend:
         self.template = workflow_template
         self.base_url = base_url
         self.transport = transport or UrllibTransport(base_url, timeout=request_timeout)
+        self.request_timeout = request_timeout
         self.client_id = client_id
         self.poll_interval = poll_interval
         self.timeout = timeout
         self.vanish_after = vanish_after
+        # Default: the host-wide ARGUS_GPU_* environment; unset is no gating.
+        self.gpu = gpu_coordinator if gpu_coordinator is not None else gpu.default_coordinator()
+        self.priority = priority
+        self._session: gpu.TileLeases | None = None
+        self._placed: dict[str, Transport] = {}
 
     # -- doctor ------------------------------------------------------------
 
@@ -77,12 +93,39 @@ class ComfyUIBackend:
 
     # -- bake --------------------------------------------------------------
 
+    @contextlib.contextmanager
+    def gpu_session(self, caller: str) -> Iterator[gpu.TileLeases]:
+        """Hold one GPU lease across several ``generate`` calls (a block's chunks).
+
+        Each ``generate`` inside it paints under :meth:`~argus_atlas.gpu.TileLeases.current`, so a
+        yield the broker asked for is honoured before the next tile and re-queued on the same node.
+        """
+        if self._session is not None:
+            raise BackendError("a GPU session is already open on this backend")
+        with gpu.TileLeases(self.gpu, gpu.BAKE, caller=caller, priority=self.priority) as leases:
+            self._session = leases
+            try:
+                yield leases
+            finally:
+                self._session = None
+
     def generate(self, request: BakeRequest, out_png: Path, progress: StatusSink | None = None) -> BakeOutput:
         def say(message: str) -> None:
             if progress is not None:
                 progress(message)
 
-        uploaded: dict[str, str] = {}
+        controls = self._controls_for(request)  # a job that can't be painted fails before it queues for a GPU
+        try:
+            if self._session is not None:
+                return self._paint(self._session, request, controls, out_png, say)
+            with gpu.TileLeases(self.gpu, gpu.BAKE, caller=request.job_id, priority=self.priority) as leases:
+                return self._paint(leases, request, controls, out_png, say)
+        except gpu.LEASE_ERRORS as exc:
+            raise BackendError(gpu.lease_failure(exc)) from exc
+
+    def _controls_for(self, request: BakeRequest) -> dict[str, tuple[str, Path]]:
+        """``{placeholder: (kind, path)}`` for every control the template uses, or a :class:`BackendError`."""
+        controls: dict[str, tuple[str, Path]] = {}
         for kind, placeholder in sorted(control_placeholders_used(self.template).items()):
             path = request.controls.get(kind)
             if path is None or not path.is_file():
@@ -90,7 +133,37 @@ class ComfyUIBackend:
                 raise BackendError(
                     f"workflow template uses {placeholder} but the job has no {kind} control (it has: {have})"
                 )
-            uploaded[placeholder] = self._upload(path, f"{request.job_id}-{kind}.png")
+            controls[placeholder] = (kind, path)
+        return controls
+
+    def _transport_for(self, base_url: str | None) -> Transport:
+        """The configured transport, or one for the ComfyUI a broker grant names."""
+        if not base_url:
+            return self.transport
+        url = base_url.rstrip("/")
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise BackendError(f"the GPU broker granted an unusable ComfyUI URL: {base_url!r}")
+        if url not in self._placed:
+            self._placed[url] = UrllibTransport(url, timeout=self.request_timeout)
+        return self._placed[url]
+
+    def _paint(
+        self,
+        leases: gpu.TileLeases,
+        request: BakeRequest,
+        controls: dict[str, tuple[str, Path]],
+        out_png: Path,
+        say: StatusSink,
+    ) -> BakeOutput:
+        lease = leases.current()
+        transport = self._transport_for(lease.base_url)
+        if lease.via != "local":
+            say(f"GPU lease via {lease.via}" + (f" on {lease.node}" if lease.node else ""))
+
+        uploaded: dict[str, str] = {}
+        for placeholder, (kind, path) in controls.items():
+            uploaded[placeholder] = self._upload(transport, path, f"{request.job_id}-{kind}.png")
             say(f"uploaded {kind} control to ComfyUI")
 
         p = request.params
@@ -112,7 +185,7 @@ class ComfyUIBackend:
         }
         graph = render_workflow(self.template, values)
 
-        resp = self.transport.post_json("/prompt", {"prompt": graph, "client_id": self.client_id})
+        resp = transport.post_json("/prompt", {"prompt": graph, "client_id": self.client_id})
         if resp.get("node_errors"):
             raise BackendError(f"ComfyUI rejected the workflow: {resp['node_errors']}")
         prompt_id = resp.get("prompt_id")
@@ -120,8 +193,8 @@ class ComfyUIBackend:
             raise BackendError(f"ComfyUI returned no prompt_id: {resp}")
         say(f"queued prompt {prompt_id} ({p.steps} steps, denoise {p.denoise})")
 
-        entry = self._await_history(str(prompt_id))
-        data = self._first_image(entry, str(prompt_id))
+        entry = self._await_history(transport, str(prompt_id))
+        data = self._first_image(transport, entry, str(prompt_id))
         out_png.parent.mkdir(parents=True, exist_ok=True)
         out_png.write_bytes(data)
         size = png_size(data)
@@ -133,19 +206,20 @@ class ComfyUIBackend:
             )
         say(f"received {size[0]}x{size[1]} image")
 
-        version = self._version_from(self._safe_stats())
-        return BakeOutput(
-            engine_version=version, workflow_sha256=template_digest(self.template), detail={"prompt_id": prompt_id}
-        )
+        version = self._version_from(self._safe_stats(transport))
+        detail = {"prompt_id": prompt_id, "gpu_via": lease.via, "gpu_node": lease.node}
+        return BakeOutput(engine_version=version, workflow_sha256=template_digest(self.template), detail=detail)
 
-    def _safe_stats(self) -> dict:
+    @staticmethod
+    def _safe_stats(transport: Transport) -> dict:
         try:
-            return self.transport.get_json("/system_stats")
+            return transport.get_json("/system_stats")
         except BackendError:
             return {}
 
-    def _upload(self, path: Path, filename: str) -> str:
-        resp = self.transport.post_file(
+    @staticmethod
+    def _upload(transport: Transport, path: Path, filename: str) -> str:
+        resp = transport.post_file(
             "/upload/image",
             field="image",
             filename=filename,
@@ -158,7 +232,7 @@ class ComfyUIBackend:
         subfolder = resp.get("subfolder") or ""
         return f"{subfolder}/{name}" if subfolder else str(name)
 
-    def _await_history(self, prompt_id: str) -> dict:
+    def _await_history(self, transport: Transport, prompt_id: str) -> dict:
         """Poll ``/history/{prompt_id}`` until completion, error, the prompt vanishing, or the bake timeout."""
         deadline = time.monotonic() + self.timeout
         next_queue_check = time.monotonic() + self.vanish_after
@@ -167,7 +241,7 @@ class ComfyUIBackend:
         vanished = False
         while True:
             try:
-                history = self.transport.get_json(f"/history/{urllib.parse.quote(prompt_id)}")
+                history = transport.get_json(f"/history/{urllib.parse.quote(prompt_id)}")
             except BackendError as exc:
                 if time.monotonic() >= deadline:
                     raise BackendError(f"ComfyUI bake did not finish within {self.timeout:.0f}s: {exc}") from exc
@@ -191,15 +265,16 @@ class ComfyUIBackend:
                 raise BackendError(f"ComfyUI bake did not finish within {self.timeout:.0f}s")
             if now >= next_queue_check:
                 next_queue_check = now + self.vanish_after
-                if not self._queued(prompt_id):
+                if not self._queued(transport, prompt_id):
                     vanished = True
                     continue  # re-read /history now, before deciding it is gone
             time.sleep(self.poll_interval)
 
-    def _queued(self, prompt_id: str) -> bool:
+    @staticmethod
+    def _queued(transport: Transport, prompt_id: str) -> bool:
         """Whether ``/queue`` still lists *prompt_id* (running or pending); ``True`` if the queue can't be read."""
         try:
-            queue = self.transport.get_json("/queue")
+            queue = transport.get_json("/queue")
         except BackendError as exc:
             logger.debug("comfyui.queue_unreadable", prompt_id=prompt_id, error=str(exc))
             return True
@@ -210,7 +285,8 @@ class ComfyUIBackend:
                     return True
         return False
 
-    def _first_image(self, entry: dict, prompt_id: str) -> bytes:
+    @staticmethod
+    def _first_image(transport: Transport, entry: dict, prompt_id: str) -> bytes:
         for node_output in entry.get("outputs", {}).values():
             for ref in node_output.get("images", []):
                 if ref.get("type") == "temp":
@@ -222,5 +298,5 @@ class ComfyUIBackend:
                         "type": ref.get("type", "output"),
                     }
                 )
-                return self.transport.get_bytes(f"/view?{query}")
+                return transport.get_bytes(f"/view?{query}")
         raise BackendError(f"ComfyUI produced no saved image for prompt {prompt_id}")

@@ -17,6 +17,7 @@ inputs dir to fetch nothing twice.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import tempfile
 from collections.abc import Callable
@@ -321,27 +322,32 @@ def run_block(
         raise AtlasError("baking a block needs a DEM")
     out_dir.mkdir(parents=True, exist_ok=True)
     baked = []
-    for i, text in enumerate(todo, 1):
-        z, x, y = parse_tile(text)
-        job_dir = out_dir / chunk_job_id(recipe.recipe.name, z, x, y)
-        if log:
-            log(f"[{i}/{len(todo)}] {text} -> {job_dir.name}")
-        sidecar = run_chunk(
-            dem,  # type: ignore[arg-type] - checked above
-            text,
-            recipe,
-            job_dir,
-            backend=backend,
-            models_root=models_root,
-            neighbours_root=out_dir,
-            layers=layers,
-            sea_level=sea_level,
-            size=plan.size,
-            margin=plan.margin,
-            controls_only=controls_only,
-            progress=progress,
-        )
-        baked.append(sidecar)
+    # One GPU lease for the whole block, taken at the first paint and checked for a yield before each
+    # later one (argus_atlas.gpu.TileLeases); a backend without sessions leases per chunk, or not at all.
+    session = getattr(backend, "gpu_session", None)
+    held = session(f"chunks:{recipe.recipe.name}") if session and not controls_only else contextlib.nullcontext()
+    with held:
+        for i, text in enumerate(todo, 1):
+            z, x, y = parse_tile(text)
+            job_dir = out_dir / chunk_job_id(recipe.recipe.name, z, x, y)
+            if log:
+                log(f"[{i}/{len(todo)}] {text} -> {job_dir.name}")
+            sidecar = run_chunk(
+                dem,  # type: ignore[arg-type] - checked above
+                text,
+                recipe,
+                job_dir,
+                backend=backend,
+                models_root=models_root,
+                neighbours_root=out_dir,
+                layers=layers,
+                sea_level=sea_level,
+                size=plan.size,
+                margin=plan.margin,
+                controls_only=controls_only,
+                progress=progress,
+            )
+            baked.append(sidecar)
     if places is not None and not controls_only:
         for text in plan.tiles:
             job_dir = out_dir / chunk_job_id(recipe.recipe.name, *parse_tile(text))

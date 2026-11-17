@@ -60,7 +60,8 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "argus-cortex>=0.8,<0.9",
+    # 0.6+: argus_cortex.gpu_broker (argus-iris leases; [remote] = httpx, [yaml] = the tenant manifest).
+    "argus-cortex[remote,yaml]>=0.8,<0.9",
     "pydantic>=2.7",
     "structlog>=24.0",
 ]

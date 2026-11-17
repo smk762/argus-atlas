@@ -234,6 +234,20 @@ ControlNet choice and weight live in the ComfyUI workflow template, not in Pytho
 
 The starter template names an SDXL depth ControlNet model directly; replace that name with whatever your ComfyUI has installed.
 
+### GPU leases (argus-iris)
+
+Every bake holds a GPU lease from the suite's coordinator, set host-wide by `ARGUS_GPU_*` (unset means no gating, which is how atlas ran before). With `ARGUS_GPU_COORDINATOR=broker`, a bake asks [argus-iris](https://github.com/smk762/argus-iris) for a `batch` lease on `comfyui` (kind `bake`, declared in [`gpu-tenant.yaml`](gpu-tenant.yaml)) and sends its prompt to the ComfyUI the grant names, or to `COMFYUI_BASE_URL` when the grant names none. The lease covers the ComfyUI round trip only: controls, the gate, the crop and the tiles are GDAL work and hold no GPU.
+
+`chunks` holds one lease for the whole block, taken when the first chunk is painted. Before each later chunk it checks whether the broker wants the GPU back. If it does, atlas releases the lease and queues again, pinned to the node the block started on so that one recipe is painted by one ComfyUI. A prompt already in ComfyUI runs to the end; nothing is killed. A refused or timed-out lease fails the bake with a message that says so. When iris can't be reached, the lease comes from `ARGUS_GPU_BROKER_FALLBACK`.
+
+| Variable | Value |
+|---|---|
+| `ARGUS_GPU_COORDINATOR` | `broker` (or `lease`, `none`) |
+| `ARGUS_GPU_BROKER_URL` | `http://<GPU_HOST>:8120` |
+| `ARGUS_GPU_BROKER_TOKEN` | the shared caller token (a secret: the host's `.env`, never a repo) |
+| `ARGUS_GPU_TENANT_MANIFEST` | `gpu-tenant.yaml` (the image ships it at `/app/gpu-tenant.yaml`, and compose sets that path) |
+| `ARGUS_GPU_BROKER_FALLBACK` | `lease` (default) or `none` |
+
 ## The alignment gate
 
 Before a GeoTIFF or any tile is written, all of the following must hold:
@@ -254,6 +268,7 @@ The three failures new users hit, and what to do:
 | `--resolution` too fine, largest `--bbox` that fits is printed | Bounding box is too large for the 1536 cap at that ground resolution | Use the `--bbox` the message gives you, or drop `--resolution` and let `--long-side` choose the resolution. |
 | `doctor` shows `backend: comfyui — unreachable (...)`; `bake` fails with `ComfyUI request to <url> failed: ...` | Nothing listening on `COMFYUI_BASE_URL` | Start ComfyUI on the host, or pass `--comfyui-url`. Inside Compose the default reaches the host via `host.docker.internal`. |
 | `bake` exits 3 | `ATLAS_ALLOW_BAKE` is not `1` | Set it on purpose. The default is read-only so a demo box cannot be made to spend GPU time. |
+| `bake` fails with `the GPU broker refused the lease: …` or `no GPU lease in time: …` | `ARGUS_GPU_COORDINATOR=broker` and iris would not place the bake | Read the reason it gives; the bake is not retried. Unset `ARGUS_GPU_COORDINATOR` to bake without leases. |
 
 ## HTTP API
 

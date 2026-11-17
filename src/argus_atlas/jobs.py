@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import secrets
 import shutil
+import tempfile
 import time
 from pathlib import Path
 
@@ -90,11 +91,31 @@ def copy_job(src: Path, dst: Path) -> JobSidecar:
     bake/tiles record."""
     sidecar = load_sidecar(src)
     job_id = require_safe_id(dst.name)
-    dst.mkdir(parents=True, exist_ok=True)
-    for source in src.iterdir():
-        if source.is_file() and source.name != SIDECAR_NAME and not source.name.startswith(BAKE_OUTPUT_PREFIX):
-            shutil.copy2(source, dst / source.name)
-    fresh = sidecar.model_copy(
+    if dst.resolve() == src.resolve():
+        raise AtlasError(f"cannot copy job {src.name} onto itself")
+    if dst.exists() and (not dst.is_dir() or any(dst.iterdir())):
+        # Never merge into another job: its bake/tiles record would be dropped while its outputs stay.
+        raise AtlasError(f"{dst} already exists — pick a new name, or bake that job directly")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    # Copy into a hidden sibling and rename it into place, so a half-finished copy never looks like a job.
+    staging = Path(tempfile.mkdtemp(prefix=f".{dst.name}.", suffix=".part", dir=dst.parent))
+    try:
+        for source in src.iterdir():
+            if source.is_file() and source.name != SIDECAR_NAME and not source.name.startswith(BAKE_OUTPUT_PREFIX):
+                shutil.copy2(source, staging / source.name)
+        fresh = _fresh_copy(sidecar, job_id)
+        save_sidecar(staging, fresh)
+        if dst.exists():
+            dst.rmdir()  # empty (checked above); rename needs it gone
+        staging.rename(dst)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return fresh
+
+
+def _fresh_copy(sidecar: JobSidecar, job_id: str) -> JobSidecar:
+    return sidecar.model_copy(
         update={
             "job_id": job_id,
             "bake": None,
@@ -103,8 +124,6 @@ def copy_job(src: Path, dst: Path) -> JobSidecar:
             "timings": {k: v for k, v in sidecar.timings.items() if k in CONTROL_STAGES},
         }
     )
-    save_sidecar(dst, fresh)
-    return fresh
 
 
 class JobStore:

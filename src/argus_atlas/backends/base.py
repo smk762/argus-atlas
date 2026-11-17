@@ -81,17 +81,27 @@ def make_dir_resolver(root: Path) -> ModelResolver:
     under ``checkpoints/`` / ``loras/``, then a recursive search by basename."""
     root = root.expanduser()
 
+    def inside(candidate: Path) -> bool:
+        try:
+            candidate.resolve().relative_to(root.resolve())
+        except ValueError:
+            return False
+        return True
+
     def resolve(name: str) -> Path:
-        direct = root / name
-        if direct.is_file():
+        rel = Path(name)
+        if not name or "\x00" in name or rel.is_absolute() or ".." in rel.parts:
+            raise FileNotFoundError(f"model name {name!r} must be a relative path under the models root")
+        direct = root / rel
+        if direct.is_file() and inside(direct):
             return direct
         for sub in _MODEL_SUBDIRS:
-            candidate = root / sub / name
-            if candidate.is_file():
+            candidate = root / sub / rel
+            if candidate.is_file() and inside(candidate):
                 return candidate
         basename = glob.escape(Path(name).name)
         for candidate in sorted(root.rglob(basename)) if root.is_dir() else []:
-            if candidate.is_file():
+            if candidate.is_file() and inside(candidate):
                 return candidate
         raise FileNotFoundError(f"no model named {name!r} under {root}")
 

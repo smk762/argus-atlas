@@ -168,3 +168,21 @@ def test_pending_prompt_keeps_polling(tmp_path: Path, controls: dict[str, Path])
     )
     backend.generate(BakeRequest("j", GRID, PARAMS, controls), tmp_path / "out.png")
     assert (tmp_path / "out.png").is_file()
+
+
+def test_finish_between_history_and_queue_reads_is_success(tmp_path: Path, controls: dict[str, Path]) -> None:
+    """The prompt leaves /queue for /history between the two reads: a re-read of /history finds it."""
+
+    class Racy(FakeTransport):
+        def get_json(self, path: str) -> dict:
+            if path == "/queue":
+                return {"queue_running": [], "queue_pending": []}  # already done by the time /queue is read
+            return super().get_json(path)
+
+    transport = Racy()
+    transport._tmp = str(tmp_path)
+    backend = ComfyUIBackend(
+        example_template(), "http://comfy:8188", transport=transport, poll_interval=0.0, vanish_after=0.0
+    )
+    backend.generate(BakeRequest("j", GRID, PARAMS, controls), tmp_path / "out.png")
+    assert (tmp_path / "out.png").is_file()

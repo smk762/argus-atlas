@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -112,13 +113,18 @@ def run(argv: list[str], *, timeout: float = DEFAULT_TIMEOUT, cwd: Path | None =
     return GdalCommand(tool=tool, argv=list(argv))
 
 
+GDALINFO_TIMEOUT = 120.0
+
+
 def gdalinfo_json(path: Path, *, stats: bool = False) -> dict:
     """``gdalinfo -json`` of *path* as a dict; *stats* adds exact per-band statistics (NoData excluded)."""
     argv = ["gdalinfo", "-json", *(["-stats"] if stats else []), str(path)]
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=120, check=False)
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=GDALINFO_TIMEOUT, check=False)
     except FileNotFoundError as exc:
         raise GdalError("gdalinfo is not installed (not on PATH)") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise GdalError(f"gdalinfo timed out after {GDALINFO_TIMEOUT:.0f}s on {path}") from exc
     if proc.returncode != 0:
         raise GdalError(f"gdalinfo failed on {path}: {(proc.stderr or '').strip()[-400:]}")
     try:
@@ -141,6 +147,9 @@ def _ts(grid: Grid) -> list[str]:
     return ["-ts", str(grid.width), str(grid.height)]
 
 
+# The NoData value of every warped DEM (warp_argv), which the sea mask excludes.
+DEM_NODATA = -9999
+
 RESAMPLING_METHODS: tuple[str, ...] = ("bilinear", "cubic", "cubicspline", "lanczos", "average")
 # Above this DEM-cell-to-canvas-pixel ratio bilinear leaves a visible cell staircase in the
 # hillshade (piecewise-linear surface, gradient jumps at every cell edge); a spline is smooth.
@@ -155,10 +164,30 @@ def dem_pixel_metres(dem: Path, latitude: float) -> float | None:
         wkt = str(info.get("coordinateSystem", {}).get("wkt", ""))
     except (GdalError, KeyError, TypeError):
         return None
-    cell = (abs(float(gt[1])) + abs(float(gt[5]))) / 2
+    dx, dy = abs(float(gt[1])), abs(float(gt[5]))
     if wkt.startswith(("GEOGCRS", "GEOGCS")):
-        return cell * 111320.0 * max(0.1, math.cos(math.radians(latitude)))
-    return cell
+        # Only a degree of longitude shrinks with latitude; a degree of latitude stays ~110.6 km.
+        x_m = dx * METRES_PER_DEG_LON * max(0.1, math.cos(math.radians(latitude)))
+        y_m = dy * METRES_PER_DEG_LAT
+        return (x_m + y_m) / 2
+    return (dx + dy) / 2 * linear_unit_metres(wkt)
+
+
+METRES_PER_DEG_LON = 111320.0  # at the equator
+METRES_PER_DEG_LAT = 110574.0
+
+# The CS-level linear unit is the last LENGTHUNIT (WKT2) / UNIT (WKT1) in a projected CRS.
+_UNIT_RE = re.compile(r'\b(?:LENGTHUNIT|UNIT)\["[^"]*",\s*([0-9.]+(?:[eE][-+]?\d+)?)')
+
+
+def linear_unit_metres(wkt: str) -> float:
+    """Metres per linear unit of a projected CRS's WKT (1 for metres, 0.3048 for feet); 1 if none is stated."""
+    found = _UNIT_RE.findall(wkt)
+    try:
+        factor = float(found[-1]) if found else 1.0
+    except ValueError:
+        return 1.0
+    return factor if factor > 0 else 1.0
 
 
 def choose_resampling(dem_metres: float | None, canvas_metres: float) -> str:
@@ -184,7 +213,7 @@ def warp_argv(dem: Path, dst: Path, grid: Grid, *, resampling: str = "bilinear")
         "-ot",
         "Float32",
         "-dstnodata",
-        "-9999",
+        repr(DEM_NODATA),
         "-co",
         "COMPRESS=DEFLATE",
         str(dem),
@@ -367,7 +396,12 @@ def composite_argv(
 
 
 def sea_mask_argv(calc: str, dem_3857: Path, dst: Path, level: float) -> list[str]:
-    """0/255 mask of DEM cells at or below *level* metres (NoData cells excluded), via ``gdal_calc``."""
+    """0/255 mask of DEM cells at or below *level* metres (NoData cells excluded), via ``gdal_calc``.
+
+    *dem_3857* is :func:`warp_argv`'s output, whose NoData is always :data:`DEM_NODATA`
+    (gdalwarp maps whatever the source declared onto it), so that one value is excluded
+    explicitly; ``--hideNoData`` keeps it from becoming the output's NoData.
+    """
     return [
         calc,
         "--quiet",
@@ -377,7 +411,7 @@ def sea_mask_argv(calc: str, dem_3857: Path, dst: Path, level: float) -> list[st
         "-A",
         str(dem_3857),
         "--calc",
-        f"255*logical_and(A<={level!r},A>-9000)",
+        f"255*logical_and(A<={level!r},A!={DEM_NODATA!r})",
         "--type",
         "Byte",
         "--co",

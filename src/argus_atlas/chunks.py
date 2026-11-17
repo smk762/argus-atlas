@@ -305,7 +305,11 @@ def build_seams(job_dir: Path, sidecar: JobSidecar, neighbours: list[ChunkNeighb
 
     init_tif, init_png = (job_dir / n for n in SEAM_FILES[SEAM_INIT_KIND])
     mask_tif, mask_png = (job_dir / n for n in SEAM_FILES[SEAM_MASK_KIND])
-    init_tif.unlink(missing_ok=True)
+    # gdal_rasterize/gdal_proximity update an existing output in place (keeping an earlier run's
+    # footprints and ignoring -init/-ts), so every derived raster of a previous seam run goes first.
+    for stale in (init_tif, init_png, mask_tif, mask_png, job_dir / SEAM_FOOTPRINT_TIF, job_dir / SEAM_DISTANCE_TIF):
+        stale.unlink(missing_ok=True)
+        gdal_ops.strip_aux(stale)
     commands.append(gdal_ops.run(gdal_ops.rgb_copy_argv(base, init_tif, grey=base_kind == "hillshade")))
     for n in neighbours:
         commands.append(gdal_ops.run(gdal_ops.paste_argv(Path(n.image.path), init_tif)))
@@ -518,6 +522,7 @@ def crop_chunk(job_dir: Path, sidecar: JobSidecar) -> tuple[FileRef, GdalCommand
     dst = job_dir / CHUNK_TIF
     part = dst.with_name(f".{dst.name}.part")
     part.unlink(missing_ok=True)
+    gdal_ops.strip_aux(part)  # a stale PAM sidecar would override the crop's own georeferencing
     command = gdal_ops.run(gdal_ops.crop_argv(src, part, chunk.margin, chunk.margin, chunk.size, chunk.size))
     try:
         verify_alignment(part, chunk.inner)
@@ -525,7 +530,9 @@ def crop_chunk(job_dir: Path, sidecar: JobSidecar) -> tuple[FileRef, GdalCommand
         part.unlink(missing_ok=True)
         gdal_ops.strip_aux(part)
         raise
+    gdal_ops.strip_aux(part)
     dst.unlink(missing_ok=True)
+    gdal_ops.strip_aux(dst)
     part.replace(dst)
     return FileRef(path=dst.name, sha256=sha256_file(dst)), command
 
@@ -594,9 +601,13 @@ def run_chunk(
         if previous is None:
             return
         try:
-            if load_sidecar(out_dir).bake is None:
-                save_sidecar(out_dir, previous)
-                logger.info("chunks.kept_previous", job_id=job_id)
+            if load_sidecar(out_dir).bake is not None:
+                return
+            png = out_dir / previous.bake.image.path if previous.bake is not None else None
+            if png is not None and (not png.is_file() or sha256_file(png) != previous.bake.image.sha256):
+                return  # the canvas was repainted before the failure: the old record no longer describes it
+            save_sidecar(out_dir, previous)
+            logger.info("chunks.kept_previous", job_id=job_id)
         except (OSError, AtlasError):
             pass
 
@@ -629,9 +640,9 @@ def run_chunk(
         save_sidecar(out_dir, sidecar)
         sidecar = build_seams(out_dir, sidecar, neighbours)
         emit("controls", f"seams: {len(neighbours)} neighbour(s) of {recipe.recipe.name} pasted into the margin")
-    except AtlasError as exc:
+    except Exception as exc:  # any failure, not only ours: the earlier crop stays published
         keep_previous()
-        emit("error", str(exc))
+        emit("error", str(exc) if isinstance(exc, AtlasError) else f"{type(exc).__name__}: {exc}")
         raise
     if controls_only:
         return sidecar
@@ -639,7 +650,7 @@ def run_chunk(
     params = recipe_params(recipe.recipe, seed=recipe_seed(recipe.recipe, z, x, y))
     try:
         sidecar = run_bake(out_dir, params, backend, models_root=models_root, progress=progress)
-    except AtlasError:
+    except Exception:
         keep_previous()  # run_bake has emitted the error frame
         raise
     try:

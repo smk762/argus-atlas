@@ -18,6 +18,8 @@ import importlib.resources
 import json
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from argus_atlas.backends.workflow import (
     EXAMPLE_TEMPLATE_SEAM,
     EXAMPLE_TEMPLATE_SEAM_NOLORA,
@@ -69,20 +71,33 @@ def recipe_record(recipe: Recipe) -> RecipeRecord:
     return RecipeRecord(recipe=recipe, sha256=recipe_digest(recipe))
 
 
-def load_recipe(ref: str | Path, *, recipes_root: Path | None = None) -> tuple[Recipe, Path]:
-    """The recipe at *ref* (a file) or named *ref* under *recipes_root*, and the file it came from."""
+def load_recipe(ref: str | Path, *, recipes_root: Path | None = None, allow_path: bool = False) -> tuple[Recipe, Path]:
+    """The recipe named *ref* under *recipes_root*, or (only with *allow_path*, for a trusted caller
+    such as the CLI) the recipe file at *ref*; and the file it came from.
+
+    A name is confined to *recipes_root*: no separators, no ``..``, and the resolved file must sit
+    inside the root. Errors never quote the file's contents.
+    """
     path = Path(ref).expanduser()
-    if not path.is_file():
+    if not (allow_path and path.is_file()):
         name = str(ref)
         if recipes_root is None or not is_safe_id(name) or name.endswith(RECIPE_SUFFIX):
-            raise AtlasError(f"recipe file not found: {ref}")
-        path = recipes_root.expanduser() / f"{name}{RECIPE_SUFFIX}"
+            raise AtlasError(f"recipe file not found: {ref}" if allow_path else f"no recipe named {name!r}")
+        root = recipes_root.expanduser()
+        path = root / f"{name}{RECIPE_SUFFIX}"
+        try:
+            path.resolve().relative_to(root.resolve())
+        except ValueError:
+            raise AtlasError(f"no recipe named {name!r}") from None
         if not path.is_file():
             raise AtlasError(f"no recipe named {name!r} (looked for {path})")
     try:
         recipe = Recipe.model_validate_json(path.read_text(encoding="utf-8"))
+    except ValidationError as exc:
+        problems = "; ".join(f"{'.'.join(map(str, e['loc'])) or '<root>'}: {e['msg']}" for e in exc.errors())
+        raise AtlasError(f"invalid recipe {path}: {problems}") from None
     except (OSError, ValueError) as exc:
-        raise AtlasError(f"invalid recipe {path}: {exc}") from exc
+        raise AtlasError(f"invalid recipe {path}: {type(exc).__name__}") from exc
     if recipe.preset is not None:
         get_preset(recipe.preset)  # an unknown preset fails here, not mid-bake
     return recipe, path

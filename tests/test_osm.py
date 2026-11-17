@@ -44,8 +44,8 @@ def test_query_is_scale_aware() -> None:
 
 
 def test_where_clause_and_unknown_layer() -> None:
-    assert osm.where_clause("water", 11).startswith("natural IN ('water'")
-    assert osm.where_clause("buildings", 13) == "building IS NOT NULL"
+    assert osm.where_clause("water", 11).startswith(""""natural" IN ('water'""")
+    assert osm.where_clause("buildings", 13) == '"building" IS NOT NULL'
     with pytest.raises(AtlasError, match="empty below zoom 13"):
         osm.where_clause("buildings", 11)
     with pytest.raises(AtlasError, match="unknown OSM layer"):
@@ -87,3 +87,45 @@ def test_fetch_osm_splits_layers_and_writes_manifest(tmp_path: Path) -> None:
 
 def test_bbox_parse_roundtrip() -> None:
     assert BBox.parse(TEST_BBOX.as_text()) == TEST_BBOX
+
+
+@pytest.mark.parametrize("tag, values", [('name" OR 1=1 --', None), ("highway", ['a"];node(1);(']), ("x", ["a|.*"])])
+def test_filters_refuse_anything_but_plain_tokens(tag: str, values: list[str] | None) -> None:
+    with pytest.raises(AtlasError, match="must be letters"):
+        osm._overpass_filter(tag, values)
+    with pytest.raises(AtlasError, match="must be letters"):
+        osm._sql_filter(tag, values)
+    assert osm._sql_filter("name:en", None) == '"name:en" IS NOT NULL'
+
+
+@pytest.mark.parametrize("url", ["file:///etc/passwd", "ftp://host/x", "gopher://h", "http:///nohost"])
+def test_overpass_fetch_refuses_non_http_urls(url: str) -> None:
+    with pytest.raises(AtlasError, match="must be http"):
+        osm.overpass_fetch("[out:xml];", url)
+
+
+def test_overpass_runtime_error_in_a_200_is_a_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+
+    body = (
+        b'<?xml version="1.0" encoding="UTF-8"?><osm version="0.6"><note>x</note>'
+        b'<remark> runtime error: Query timed out in "query" at line 1 after 181 seconds. </remark></osm>'
+    )
+
+    class Resp(io.BytesIO):
+        def __enter__(self):  # noqa: ANN204
+            return self
+
+        def __exit__(self, *a):  # noqa: ANN002, ANN204
+            return False
+
+    monkeypatch.setattr(osm._NO_REDIRECT, "open", lambda req, timeout: Resp(body))
+    with pytest.raises(AtlasError, match="timed out"):
+        osm.overpass_fetch("[out:xml];")
+    monkeypatch.setattr(osm._NO_REDIRECT, "open", lambda req, timeout: Resp(b"<html>secret page</html>"))
+    with pytest.raises(AtlasError) as info:
+        osm.overpass_fetch("[out:xml];")
+    assert "secret" not in str(info.value)
+    ok = b'<?xml version="1.0"?><osm version="0.6"><remark>fine</remark><node id="1" lat="0" lon="0"/></osm>'
+    monkeypatch.setattr(osm._NO_REDIRECT, "open", lambda req, timeout: Resp(ok))
+    assert osm.overpass_fetch("[out:xml];") == ok

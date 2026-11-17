@@ -47,6 +47,7 @@ try:
 except ImportError as exc:  # pragma: no cover
     raise ImportError("Server requires: pip install argus-atlas[server]") from exc
 
+import structlog
 from argus_cortex.server import WriteGuard
 from pydantic import BaseModel, Field, field_validator
 
@@ -62,11 +63,14 @@ from argus_atlas.models import (
     BBox,
     JobDigest,
     JobSidecar,
+    ProgressEvent,
     TilesRecord,
     ZFactor,
     check_z_factor,
 )
 from argus_atlas.provenance import generator
+
+logger = structlog.get_logger()
 
 _BAKE_REFUSAL = "live baking is disabled on this host (set ATLAS_ALLOW_BAKE=1 to enable POST /bake/stream)"
 _OSM_REFUSAL = "fetching OSM from the server is disabled on this host (set ATLAS_ALLOW_OSM=1 to enable POST /osm)"
@@ -470,17 +474,20 @@ def create_app(
         def emit(frame: dict | None) -> None:
             loop.call_soon_threadsafe(queue.put_nowait, frame)
 
+        terminal = [False]  # whether a done/error frame has gone out
+
+        def progress(ev: ProgressEvent) -> None:
+            terminal[0] = terminal[0] or ev.type in ("done", "error")
+            emit(ev.model_dump())
+
         def work() -> None:
             try:
-                run_bake(
-                    job_dir,
-                    params,
-                    backend,
-                    models_root=models_root,
-                    progress=lambda ev: emit(ev.model_dump()),
-                )
-            except AtlasError:
-                pass  # run_bake already emitted the error frame
+                run_bake(job_dir, params, backend, models_root=models_root, progress=progress)
+            except Exception as exc:  # noqa: BLE001 - every failure ends the stream with an error frame
+                if not terminal[0]:
+                    message = str(exc) if isinstance(exc, AtlasError) else f"{type(exc).__name__}: {exc}"
+                    progress(ProgressEvent(job_id=sidecar.job_id, type="error", message=message))
+                logger.warning("server.bake_failed", job_id=sidecar.job_id, error=str(exc))
             finally:
                 _release(sidecar.job_id)
                 emit(None)
@@ -496,7 +503,10 @@ def create_app(
                         break
                     yield json.dumps(frame) + "\n"
             finally:
-                await worker
+                try:
+                    await worker  # work() swallows its own failures; never re-raise into a started body
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("server.bake_worker_failed", error=str(exc))
 
         return StreamingResponse(stream(), media_type="application/x-ndjson")
 

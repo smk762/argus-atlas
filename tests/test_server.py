@@ -356,3 +356,32 @@ def test_purge_refuses_a_job_that_is_baking(roots: dict[str, Path], monkeypatch:
     assert (roots["jobs"] / "baking" / "job.json").is_file()
     assert c.post("/purge/baking", json=CONFIRM).status_code == 200
     assert not (roots["jobs"] / "baking").exists()
+
+
+def test_an_unexpected_bake_failure_ends_the_stream_with_an_error_frame(
+    roots: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import argus_atlas.bake
+
+    _seed_job(roots["jobs"], "crash")
+
+    def crash(*args, **kwargs) -> None:  # noqa: ANN002, ANN003
+        raise KeyError("boom")  # not an AtlasError, and no frame emitted
+
+    monkeypatch.setattr(argus_atlas.bake, "run_bake", crash)
+    c = TestClient(
+        create_app(
+            jobs_dir=roots["jobs"],
+            dem_dir=roots["dem"],
+            models_dir=roots["models"],
+            allow_bake=True,
+            backend_factory=FakeBackend,
+        )
+    )
+    with c.stream("POST", "/bake/stream", json={"job_id": "crash", "checkpoint": "c"}) as resp:
+        assert resp.status_code == 200
+        frames = [json.loads(line) for line in resp.iter_lines() if line]
+    assert frames[-1]["type"] == "error" and "KeyError" in frames[-1]["message"]
+    # the claim was released: another bake of the job is not refused as busy
+    with c.stream("POST", "/bake/stream", json={"job_id": "crash", "checkpoint": "c"}) as resp:
+        assert resp.status_code == 200

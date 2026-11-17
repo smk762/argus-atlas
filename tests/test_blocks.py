@@ -202,3 +202,13 @@ def test_block_inputs_are_fetched_once(tmp_path: Path, monkeypatch: pytest.Monke
     (tmp_path / "osm" / "forest.geojson").unlink()
     blocks.block_osm(bbox, tmp_path, ["water", "forest"], 13, url="x")  # a layer file gone: fetch again
     assert calls == ["dem", "osm", "osm", "osm", "osm"]
+
+
+def test_ascii_grid_nodata_reads_as_no_land(tmp_path: Path) -> None:
+    from argus_atlas.blocks import _read_ascii_grid
+
+    asc = tmp_path / "g.asc"
+    asc.write_text(
+        "ncols 3\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\nNODATA_value -9999\n1 -9999 0\n-9999 -9999 1\n"
+    )
+    assert _read_ascii_grid(asc) == [[1, 0, 0], [0, 0, 1]]

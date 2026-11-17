@@ -409,7 +409,9 @@ def blend_chunk(
         offset = [0.0, 0.0, 0.0]
         if chunk.tone:
             theirs, ours = work / "tone_theirs.tif", work / "tone_ours.tif"
-            strip = f"where((B==255)*(C<={TONE_STRIP}),A,-1)"
+            # -1.0, not -1: numpy 2 (NEP 50) keeps where(cond, <uint8 band>, -1) uint8, so -1 wrapped to
+            # 255 and every cell outside the strip was averaged in as white (GDAL 3.12 / numpy 2.3 in CI).
+            strip = f"where((B==255)*(C<={TONE_STRIP}),A,-1.0)"
             commands.append(
                 run(
                     gdal_ops.calc_argv(
@@ -423,7 +425,7 @@ def blend_chunk(
                     )
                 )
             )
-            strip = f"where((B==0)*(C<={TONE_STRIP}),A,-1)"
+            strip = f"where((B==0)*(C<={TONE_STRIP}),A,-1.0)"
             commands.append(
                 run(
                     gdal_ops.calc_argv(

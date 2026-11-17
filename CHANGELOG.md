@@ -19,6 +19,7 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 
 ### Fixed
 
+- **Chunk tone matching works with numpy 2.** The tone-strip `gdal_calc` expressions marked cells outside the strip with `-1` in `where(cond, A, -1)`; under numpy 2's promotion rules (NEP 50) that result stays `uint8`, so `-1` became 255 and those cells were averaged in as white, shrinking the tone offset (CI on Ubuntu 26.04: GDAL 3.12.2, numpy 2.3). The marker is now `-1.0`.
 - **A failed bake no longer leaves `job.json` describing another canvas.** The backend paints `fantasy.part.png`, which is moved onto `fantasy.png` only once it is complete and carries its metadata; a failure after that drops the old bake/tiles record instead of keeping it. Every failure, not only an `AtlasError`, ends `run_bake` and `POST /bake/stream` with an `error` frame, and a crashed worker no longer aborts the stream mid-body.
 - **A chunk re-run that fails with any exception keeps its earlier crop published** (unless the canvas was already repainted). A seam re-run deletes the previous run's footprint, distance and mask rasters first, so footprints of neighbours that are gone no longer persist.
 - **Mosaic:** a tile shared by a chunk and a chunk that starts at a finer zoom comes from the overview, so chunk edges show no blank strip; non-point label features are skipped instead of crashing the merge.

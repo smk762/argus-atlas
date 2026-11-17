@@ -177,6 +177,29 @@ def test_a_grant_without_a_url_uses_the_configured_comfyui(tmp_path: Path) -> No
         backend._transport_for("file:///etc")
 
 
+def test_atlas_gpu_priority_sets_the_class_of_every_lease(
+    tmp_path: Path, controls: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ATLAS_GPU_PRIORITY", "Background")
+    coordinator = Recording()
+    backend = _backend(tmp_path, coordinator)
+    backend.generate(_request(controls), tmp_path / "fantasy.png")
+    with backend.gpu_session("chunks:antique"):
+        backend.generate(_request(controls, "chunk-1"), tmp_path / "1.png")
+    assert [c["priority"] for c in coordinator.calls] == ["background", "background"]
+    assert [c["preemptible"] for c in coordinator.calls] == [True, True]
+
+
+def test_an_unknown_priority_is_refused_before_any_lease(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ATLAS_GPU_PRIORITY", "urgent")
+    with pytest.raises(
+        BackendError, match="ATLAS_GPU_PRIORITY='urgent' is not a priority class: realtime, interactive"
+    ):
+        _backend(tmp_path, Recording())
+    monkeypatch.setenv("ATLAS_GPU_PRIORITY", "")
+    assert _backend(tmp_path, Recording()).priority == "batch"  # unset or empty: the default
+
+
 # --- a block -------------------------------------------------------------------------------------------------
 
 

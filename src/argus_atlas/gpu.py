@@ -22,7 +22,9 @@ uses its learned p95 per kind when that is larger. A refused or timed-out lease,
 from __future__ import annotations
 
 import contextlib
+import os
 from dataclasses import dataclass
+from typing import get_args
 
 from argus_cortex.gpu import GpuCoordinator, GpuLease, GpuLeaseRefused, GpuLeaseTimeout, coordinator_from_env
 from argus_cortex.gpu_broker import BrokerError
@@ -33,6 +35,9 @@ from argus_atlas.backends.base import BackendError
 TENANT = "argus-atlas"
 TARGET_COMFYUI = "comfyui"
 DEFAULT_PRIORITY: PriorityClass = "batch"
+# The class atlas's leases ask for, when set: `background` queues a long re-bake behind everything else, so it runs
+# only on capacity nobody else wants (with the broker in `admission: enforce`; in `observe` every lease is granted).
+ENV_PRIORITY = "ATLAS_GPU_PRIORITY"
 
 LEASE_ERRORS: tuple[type[Exception], ...] = (GpuLeaseRefused, GpuLeaseTimeout, BrokerError)
 
@@ -56,6 +61,18 @@ def default_coordinator() -> GpuCoordinator:
         return coordinator_from_env()
     except ValueError as exc:
         raise BackendError(str(exc)) from exc
+
+
+def priority_from_env() -> PriorityClass:
+    """``ATLAS_GPU_PRIORITY`` (a cortex priority class), else :data:`DEFAULT_PRIORITY`; a :class:`BackendError` for
+    anything else, so a typo never silently bakes at the wrong class."""
+    raw = os.environ.get(ENV_PRIORITY, "").strip().lower()
+    if not raw:
+        return DEFAULT_PRIORITY
+    classes = get_args(PriorityClass)
+    if raw not in classes:
+        raise BackendError(f"{ENV_PRIORITY}={raw!r} is not a priority class: {', '.join(classes)}")
+    return raw  # type: ignore[return-value]
 
 
 def lease_failure(exc: Exception) -> str:

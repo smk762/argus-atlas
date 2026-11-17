@@ -71,3 +71,32 @@ def test_presets_resolve_and_override() -> None:
     assert resolve_params(None)["preset"] is None
     with pytest.raises(AtlasError, match="unknown preset"):
         resolve_params("sepia-dreams")
+
+
+def test_exif_goes_before_the_image_data(tmp_path: Path) -> None:
+    png = write_png(tmp_path / "f.png", 8, 8)
+    metadata.embed_png(png, {"k": "v"})
+    kinds = [kind for kind, _ in metadata._chunks(png.read_bytes())]
+    assert kinds.index(b"eXIf") < kinds.index(b"IDAT") and kinds.index(b"tEXt") < kinds.index(b"IDAT")
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+@pytest.mark.parametrize("text", ["", "ab", "abc", "abcd", "abcdefgh"])
+def test_short_ascii_values_are_inline(text: str) -> None:
+    import struct
+
+    blob = metadata.build_exif(text, software="sw")
+    assert metadata.parse_exif_description(blob) == text
+    # IFD0 entry 0 is ImageDescription, entry 1 Software ("sw\0" is 3 bytes: inline, NUL-padded)
+    tag, kind, count = struct.unpack("<HHI", blob[22:30])
+    assert (tag, kind, count, blob[30:34]) == (0x0131, 2, 3, b"sw\x00\x00")
+    tag, _, count = struct.unpack("<HHI", blob[10:18])
+    assert tag == 0x010E and count == len(text) + 1
+    if count <= 4:
+        assert blob[18:22] == (text.encode() + b"\x00").ljust(4, b"\x00")
+
+
+def test_truncated_ifd_is_none_not_an_error() -> None:
+    blob = metadata.build_exif('{"a":1}')
+    head = blob[:8] + b"\xff\xff" + blob[10:20]  # claims 65535 entries, holds one
+    assert metadata.parse_exif_description(head) is None

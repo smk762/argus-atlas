@@ -102,11 +102,18 @@ def block(
 
 
 def _read_ascii_grid(path: Path) -> list[list[int]]:
+    """The cells of an AAIGrid; a ``NODATA_value`` cell reads as 0 (no land), never as its sentinel."""
     rows = []
+    nodata: float | None = None
     for line in path.read_text(encoding="ascii").splitlines():
         parts = line.split()
-        if parts and not parts[0][0].isalpha():
-            rows.append([int(float(v)) for v in parts])
+        if not parts:
+            continue
+        if parts[0][0].isalpha():
+            if parts[0].lower() == "nodata_value" and len(parts) > 1:
+                nodata = float(parts[1])
+            continue
+        rows.append([0 if nodata is not None and float(v) == nodata else int(float(v)) for v in parts])
     return rows
 
 

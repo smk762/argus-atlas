@@ -63,3 +63,17 @@ def test_verify_alignment_rejects_wrong_corners_and_srs(job: tuple[Path, JobSide
     )
     with pytest.raises(AlignmentError, match="EPSG:4326"):
         verify_alignment(wrong_srs, g)
+
+
+def test_stale_pam_sidecars_never_override_the_stamp(job: tuple[Path, JobSidecar]) -> None:
+    """A leftover .aux.xml (of the temp part, or of the old tif) is removed, not applied."""
+    job_dir, sidecar = job
+    png = write_png(job_dir / "fantasy.png", sidecar.grid.width, sidecar.grid.height)
+    tif = job_dir / "fantasy.tif"
+    bogus = "<PAMDataset><GeoTransform>0, 1, 0, 0, 0, -1</GeoTransform></PAMDataset>"
+    (job_dir / ".fantasy.tif.part.aux.xml").write_text(bogus)
+    (job_dir / "fantasy.tif.aux.xml").write_text(bogus)
+    stamp(png, tif, sidecar.grid)
+    assert not (job_dir / "fantasy.tif.aux.xml").exists()
+    assert not list(job_dir.glob(".fantasy.tif.part*"))
+    verify_alignment(tif, sidecar.grid)

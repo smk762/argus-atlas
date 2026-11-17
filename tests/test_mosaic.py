@@ -146,3 +146,25 @@ def test_mosaic_refuses_a_second_recipe_a_changed_archive_and_a_file_out(style: 
         f.write(b"\0")
     with pytest.raises(MosaicError, match="changed since its job.json"):
         style_chunks(style)
+
+
+def test_merge_labels_skips_non_points(tmp_path: Path) -> None:
+    feats = [
+        {"type": "Feature", "properties": {"name": "Road"}, "geometry": {"type": "LineString", "coordinates": [[1, 2], [3, 4]]}},
+        {"type": "Feature", "properties": {"name": "Odd"}, "geometry": {"type": "Point", "coordinates": ["a", "b"]}},
+        {"type": "Feature", "properties": {"name": "Town"}, "geometry": {"type": "Point", "coordinates": [10.0, 45.0]}},
+    ]  # fmt: skip
+    (tmp_path / LABELS_NAME).write_text(json.dumps({"type": "FeatureCollection", "features": feats}))
+    merged = mosaic_mod.merge_labels([(tmp_path, None)])  # type: ignore[list-item]
+    assert [f["properties"]["name"] for f in merged["features"]] == ["Town"]
+
+
+def test_tiles_a_finer_starting_chunk_lies_under_are_straddled() -> None:
+    from types import SimpleNamespace
+
+    def chunk(z: int, x: int, y: int):  # noqa: ANN202
+        return (Path("."), SimpleNamespace(chunk=SimpleNamespace(z=z, x=x, y=y), tiles=SimpleNamespace(min_zoom=z)))
+
+    # a z12 chunk and a z14 chunk inside its tile: z12 and z13 tiles over the z14 chunk are shared
+    shared = mosaic_mod._straddled([chunk(12, 2162, 1472), chunk(14, 8650, 5890)], 10, 13)  # type: ignore[list-item]
+    assert shared == {(10, 540, 368), (11, 1081, 736), (12, 2162, 1472), (13, 4325, 2945)}

@@ -32,23 +32,25 @@ def _write(path: Path, **fields: object) -> Path:
 
 def test_load_by_path_and_by_name(tmp_path: Path) -> None:
     path = _write(tmp_path / "antique.json", preset="antique")
-    recipe, source = load_recipe(path)
+    recipe, source = load_recipe(path, allow_path=True)
     assert recipe.name == "antique" and source == path
     by_name, source = load_recipe("antique", recipes_root=tmp_path)
     assert by_name == recipe and source == path
     with pytest.raises(AtlasError, match="no recipe named"):
         load_recipe("missing", recipes_root=tmp_path)
-    with pytest.raises(AtlasError, match="not found"):
+    with pytest.raises(AtlasError, match="no recipe named"):
         load_recipe("../antique", recipes_root=tmp_path)
+    with pytest.raises(AtlasError, match="recipe file not found"):
+        load_recipe("../antique", recipes_root=tmp_path, allow_path=True)
 
 
 def test_bad_recipes_fail_on_load(tmp_path: Path) -> None:
     with pytest.raises(AtlasError, match="unknown preset"):
-        load_recipe(_write(tmp_path / "a.json", preset="nope"))
+        load_recipe(_write(tmp_path / "a.json", preset="nope"), allow_path=True)
     with pytest.raises(AtlasError, match="invalid recipe"):
-        load_recipe(_write(tmp_path / "b.json", colour="red"))  # extra fields are refused, not ignored
+        load_recipe(_write(tmp_path / "b.json", colour="red"), allow_path=True)  # extra fields are refused, not ignored
     with pytest.raises(AtlasError, match="invalid recipe"):
-        load_recipe(_write(tmp_path / "c.json", name="has space"))
+        load_recipe(_write(tmp_path / "c.json", name="has space"), allow_path=True)
 
 
 def test_seed_per_tile_is_stable_and_distinct() -> None:
@@ -109,3 +111,13 @@ def test_a_file_in_the_cwd_cannot_replace_the_packaged_template(
     monkeypatch.chdir(tmp_path)
     backend = backend_from_env(workflow=recipe_workflow(Recipe(name="a", checkpoint="c")))
     assert backend.template == example_template(EXAMPLE_TEMPLATE_SEAM_NOLORA)  # type: ignore[attr-defined]
+
+
+def test_a_name_is_never_a_path(tmp_path: Path) -> None:
+    secret = _write(tmp_path / "secret.json", colour="token-abc123")
+    for ref in (str(secret), "~/x.json", "../secret"):
+        with pytest.raises(AtlasError, match="no recipe named"):
+            load_recipe(ref, recipes_root=tmp_path / "recipes")
+    with pytest.raises(AtlasError) as info:
+        load_recipe(secret, allow_path=True)
+    assert "token-abc123" not in str(info.value) and "colour" in str(info.value)

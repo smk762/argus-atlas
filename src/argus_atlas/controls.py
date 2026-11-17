@@ -157,7 +157,7 @@ def verify_raster_grid(path: Path, grid: Grid, *, tol: float = ALIGN_TOLERANCE) 
 
 
 def validate_layer_name(name: str) -> str:
-    if not re.match(LAYER_NAME_PATTERN, name):
+    if not re.fullmatch(LAYER_NAME_PATTERN, name):
         raise AtlasError(f"bad layer name {name!r}: lowercase letters, digits and _ only, up to 32 characters")
     if name in RESERVED_CONTROL_KINDS:
         raise AtlasError(f"layer name {name!r} is reserved (atlas writes that control itself)")

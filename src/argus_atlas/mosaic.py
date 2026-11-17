@@ -160,8 +160,13 @@ def merge_labels(chunks: list[tuple[Path, JobSidecar]]) -> dict:
         except (OSError, ValueError) as exc:
             raise MosaicError(f"{path} is not readable GeoJSON: {exc}") from exc
         for feature in collection.get("features") or []:
-            coords = (feature.get("geometry") or {}).get("coordinates") or []
-            if len(coords) < 2:
+            geometry = feature.get("geometry") or {}
+            coords = geometry.get("coordinates") or []
+            if (
+                geometry.get("type") != "Point"
+                or len(coords) < 2
+                or not all(isinstance(c, (int, float)) and not isinstance(c, bool) for c in coords[:2])
+            ):
                 continue  # labels are points; anything else is not ours to place
             lon, lat = coords[:2]
             key = (str((feature.get("properties") or {}).get("name")), round(lon, 6), round(lat, 6))
@@ -169,6 +174,18 @@ def merge_labels(chunks: list[tuple[Path, JobSidecar]]) -> dict:
                 seen.add(key)
                 features.append(feature)
     return {"type": "FeatureCollection", "features": features}
+
+
+def _straddled(chunks: list[tuple[Path, JobSidecar]], zmin: int, zmax: int) -> set[TileKey]:
+    """The tiles of zoom *zmin*..*zmax* that some chunk starting at a finer zoom lies under."""
+    shared: set[TileKey] = set()
+    for _, s in chunks:
+        if s.chunk is None or s.tiles is None:
+            continue
+        cz, cx, cy = s.chunk.z, s.chunk.x, s.chunk.y
+        for z in range(zmin, min(zmax, s.tiles.min_zoom - 1, cz) + 1):
+            shared.add((z, cx >> (cz - z), cy >> (cz - z)))
+    return shared
 
 
 def _outputs(out: Path) -> tuple[bool, Path, Path]:
@@ -228,7 +245,11 @@ def mosaic(style_dir: Path, out: Path, *, overview_min: int = DEFAULT_OVERVIEW_M
         if overview_min <= overview_max:
             crops = [d / s.chunk.image.path for d, s in chunks if s.chunk and s.chunk.image]
             overviews, commands = build_overviews(crops, grid, overview_min, overview_max, work)
-            tiles += [t for t in overviews if t[:3] not in merged]  # a chunk's own tile wins
+            # A chunk's own tile wins, except where a chunk that starts finer also lies under it:
+            # the chunk tile holds only its own pixels there, the overview has both.
+            straddled = _straddled(chunks, overview_min, overview_max) & {t[:3] for t in overviews}
+            tiles = [t for t in tiles if t[:3] not in straddled]
+            tiles += [t for t in overviews if t[:3] not in merged or t[:3] in straddled]
         zooms = sorted({t[0] for t in tiles})
         metadata = {"argus_mosaic": json.dumps({"style_dir": style_dir.name, "chunks": len(chunks)})}
         if as_pmtiles:

@@ -423,3 +423,32 @@ def test_seams_work_from_a_read_only_working_directory(
         assert b.chunk is not None and b.chunk.blend is not None
     finally:
         locked.chmod(0o755)
+
+
+@requires_gdal
+def test_a_rebake_crashing_outside_atlas_keeps_the_published_chunk(dem: Path, tmp_path: Path, models_dir: Path) -> None:
+    a = _chunk(dem, tmp_path, A, models_dir)
+
+    class Oom(FakeBackend):
+        def generate(self, request, out_png, progress=None):  # noqa: ANN001, ANN202
+            raise RuntimeError("CUDA out of memory")
+
+    with pytest.raises(RuntimeError, match="CUDA"):
+        run_chunk(dem, A, RECIPE, tmp_path / a.job_id, backend=Oom(), models_root=models_dir, size=SIZE, margin=MARGIN)
+    kept = load_sidecar(tmp_path / a.job_id)
+    assert kept.status == "tiled" and kept.chunk is not None and a.chunk is not None
+    assert kept.chunk.image == a.chunk.image
+
+
+@requires_gdal
+def test_seams_rerun_drops_footprints_of_gone_neighbours(dem: Path, tmp_path: Path, models_dir: Path) -> None:
+    import shutil
+
+    a = _chunk(dem, tmp_path, A, models_dir)
+    b_dir = tmp_path / "antique-14-8651-5890"
+    run_chunk(dem, B, RECIPE, b_dir, size=SIZE, margin=MARGIN, controls_only=True)
+    assert _stats(b_dir / "seam_mask.png")[0]["minimum"] == 0
+    shutil.rmtree(tmp_path / a.job_id)
+    b = run_chunk(dem, B, RECIPE, b_dir, size=SIZE, margin=MARGIN, controls_only=True)
+    assert b.chunk is not None and b.chunk.neighbours == []
+    assert _stats(b_dir / "seam_mask.png")[0]["minimum"] == 255

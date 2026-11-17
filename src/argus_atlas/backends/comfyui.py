@@ -162,6 +162,9 @@ class ComfyUIBackend:
         """Poll ``/history/{prompt_id}`` until completion, error, the prompt vanishing, or the bake timeout."""
         deadline = time.monotonic() + self.timeout
         next_queue_check = time.monotonic() + self.vanish_after
+        # ComfyUI may finish between our /history read and the /queue read that
+        # misses it, so a queue miss only fails after one more /history read.
+        vanished = False
         while True:
             try:
                 history = self.transport.get_json(f"/history/{urllib.parse.quote(prompt_id)}")
@@ -178,16 +181,19 @@ class ComfyUIBackend:
                     raise BackendError(f"ComfyUI run failed: {status}")
                 if status.get("completed") is True or status.get("status_str") == "success" or entry.get("outputs"):
                     return entry
+            if vanished:
+                raise BackendError(
+                    f"ComfyUI prompt {prompt_id} is in neither the queue nor the history — "
+                    "ComfyUI restarted or its queue was cleared mid-bake; rerun"
+                )
             now = time.monotonic()
             if now >= deadline:
                 raise BackendError(f"ComfyUI bake did not finish within {self.timeout:.0f}s")
             if now >= next_queue_check:
                 next_queue_check = now + self.vanish_after
                 if not self._queued(prompt_id):
-                    raise BackendError(
-                        f"ComfyUI prompt {prompt_id} is in neither the queue nor the history — "
-                        "ComfyUI restarted or its queue was cleared mid-bake; rerun"
-                    )
+                    vanished = True
+                    continue  # re-read /history now, before deciding it is gone
             time.sleep(self.poll_interval)
 
     def _queued(self, prompt_id: str) -> bool:

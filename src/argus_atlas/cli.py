@@ -13,6 +13,7 @@ import os
 import secrets
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 import structlog
 
@@ -47,7 +48,7 @@ def _cli(verbose: bool = Option(False, "--verbose", "-v", help="Show info/debug 
     structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(level))
 
 
-def _fail(message: str, code: int = 1) -> None:
+def _fail(message: str, code: int = 1) -> NoReturn:
     typer.echo(message, err=True)
     raise typer.Exit(code)
 
@@ -418,6 +419,7 @@ def tiles(
         return
     if sidecar.bake is None or not sidecar.bake.aligned:
         _fail(f"{sidecar.job_id} has no aligned GeoTIFF — bake it first (or its alignment gate failed)", EXIT_INPUT)
+        return
     try:
         record = tile_job(job_dir, sidecar, out=out, min_zoom=min_zoom, max_zoom=max_zoom)
     except AlignmentError as exc:
@@ -485,7 +487,7 @@ def chunk(
         z, x, y = parse_tile(tile)
         validate_chunk(z, size, margin)
         validate_seams(size, margin, mask_feather=mask_feather, feather=feather)
-        loaded, recipe_path = load_recipe(recipe, recipes_root=config.recipes_dir())
+        loaded, recipe_path = load_recipe(recipe, recipes_root=config.recipes_dir(), allow_path=True)
         loaded = with_relief(loaded, _parse_z_factor(z_factor), vertical_exaggeration)
         workflow = None if controls_only else recipe_workflow(loaded, recipe_path)
         layers = _parse_layers(layer)
@@ -600,7 +602,7 @@ def chunks(
             if zoom is None:
                 raise AtlasError("--bbox needs --zoom")
             tiles = bbox_tiles(BBox.parse(bbox), zoom)
-        loaded, recipe_path = load_recipe(recipe, recipes_root=config.recipes_dir())
+        loaded, recipe_path = load_recipe(recipe, recipes_root=config.recipes_dir(), allow_path=True)
         loaded = with_relief(loaded, _parse_z_factor(z_factor), vertical_exaggeration)
         record = recipe_record(loaded)
         workflow = None if (plan_only or controls_only) else recipe_workflow(loaded, recipe_path)

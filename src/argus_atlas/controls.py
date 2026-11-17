@@ -25,6 +25,7 @@ from pathlib import Path
 import structlog
 
 from argus_atlas import gdal_ops
+from argus_atlas.attribution import input_sources
 from argus_atlas.hashing import sha256_file
 from argus_atlas.jobs import require_safe_id, save_sidecar
 from argus_atlas.labels import kept_labels
@@ -320,11 +321,13 @@ def build_controls(
     # Place names depend on the labelled grid only: a re-run on the same grid (a chunk re-bake) keeps them.
     labels, label_commands = kept_labels(out_dir, chunk.inner if chunk is not None else grid)
     layer_sources = {n: FileRef(path=str(p.resolve()), sha256=sha256_file(p)) for n, p in sources.items()}
+    dem_ref = FileRef(path=str(dem.resolve()), sha256=sha256_file(dem))
     sidecar = JobSidecar(
         generator=generator(),
         job_id=job_id,
         created_at=datetime.now(UTC).isoformat(timespec="seconds"),
-        dem=FileRef(path=str(dem.resolve()), sha256=sha256_file(dem)),
+        dem=dem_ref,
+        sources=input_sources(dem_ref, layer_sources),
         land_source=layer_sources.get("land"),
         layer_sources=layer_sources,
         bbox=bbox,

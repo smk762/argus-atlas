@@ -13,9 +13,12 @@ PMTiles archive:
   (skipped sea) stay transparent.
 * **Labels**: every chunk's ``labels.geojson`` merged into one, a name at the same
   point kept once.
+* **Attribution**: every chunk's sources (DEM, layers, labels; see
+  :mod:`argus_atlas.attribution`) merged, written as the archive's ``attribution``
+  metadata, into the manifest, and (for the labels' own sources) into the labels file.
 * **Manifest** (``mosaic.json``, or ``<stem>.json`` beside a ``.pmtiles``): the zoom
-  range, bounds, tile count, every source chunk's job id, tile and archive SHA256,
-  and the GDAL argv.
+  range, bounds, tile count, attribution and sources, every source chunk's job id,
+  tile and archive SHA256, and the GDAL argv.
 """
 
 from __future__ import annotations
@@ -29,13 +32,14 @@ from pathlib import Path
 import structlog
 
 from argus_atlas import gdal_ops
+from argus_atlas.attribution import attribution_text, job_sources, merge_sources, unattributed
 from argus_atlas.hashing import sha256_file
 from argus_atlas.jobs import is_safe_id, load_sidecar
 from argus_atlas.labels import LABELS_NAME
 from argus_atlas.mercator import mercator_to_bbox
 from argus_atlas.models import AtlasError, Grid, JobSidecar, relief_key
 from argus_atlas.provenance import generator
-from argus_atlas.tiles import CHUNK_SLIVER_PX, TilesError, collect_xyz, pack_pmtiles
+from argus_atlas.tiles import CHUNK_SLIVER_PX, TilesError, collect_xyz, pack_pmtiles, source_metadata
 
 logger = structlog.get_logger()
 
@@ -225,6 +229,13 @@ def mosaic(style_dir: Path, out: Path, *, overview_min: int = DEFAULT_OVERVIEW_M
     if not as_pmtiles:
         _check_dir(out)  # refuse before the tiling, not after it
     labels = merge_labels(chunks)  # a bad labels file fails here, before any output is touched
+    sources = merge_sources(src for _, s in chunks for src in job_sources(s))
+    raster = merge_sources(src for _, s in chunks for src in job_sources(s, labels=False))  # the archive's pixels
+    for missing in unattributed(sources):
+        logger.warning("mosaic.unattributed_source", source=missing)
+    labels_credit = attribution_text(s for s in sources if "labels" in s.used_for)
+    if labels_credit and labels["features"]:
+        labels["attribution"] = labels_credit  # a GeoJSON foreign member: the file travels on its own
     gdal_ops.require_gdal()
     merged = merge_archives(chunks)
     grid = union_grid(chunks)
@@ -251,7 +262,10 @@ def mosaic(style_dir: Path, out: Path, *, overview_min: int = DEFAULT_OVERVIEW_M
             tiles = [t for t in tiles if t[:3] not in straddled]
             tiles += [t for t in overviews if t[:3] not in merged or t[:3] in straddled]
         zooms = sorted({t[0] for t in tiles})
-        metadata = {"argus_mosaic": json.dumps({"style_dir": style_dir.name, "chunks": len(chunks)})}
+        metadata = {
+            "argus_mosaic": json.dumps({"style_dir": style_dir.name, "chunks": len(chunks)}),
+            **source_metadata(raster),
+        }
         if as_pmtiles:
             pack_pmtiles(tiles, out, grid, name=name or style_dir.name, extra_metadata=metadata)
         else:
@@ -277,6 +291,8 @@ def mosaic(style_dir: Path, out: Path, *, overview_min: int = DEFAULT_OVERVIEW_M
         "max_zoom": zooms[-1],
         "chunk_min_zoom": chunk_min,
         "n_tiles": len(tiles),
+        "attribution": attribution_text(sources) or None,
+        "sources": [src.model_dump() for src in sources],
         "chunks": [
             {
                 "job_id": s.job_id,

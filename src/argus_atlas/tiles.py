@@ -1,7 +1,9 @@
 """Cut a short XYZ pyramid from the aligned GeoTIFF and pack it as PMTiles.
 
 The archive's JSON metadata carries the bake payload (``argus_bake``) so a
-tileset can be ranked and reproduced without its job directory.
+tileset can be ranked and reproduced without its job directory, and the credit
+its sources require (``attribution``, which MapLibre shows, and ``argus_sources``;
+see :mod:`argus_atlas.attribution`).
 
 ``gdal2tiles.py --xyz`` tiles the raster for ``zmin..zmax`` only — the zoom
 range ends at the canvas's **native** zoom (never finer) — and is bounded to
@@ -13,6 +15,7 @@ the image; :func:`packer_status` reports both for ``doctor``.
 
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
 import time
@@ -22,9 +25,10 @@ from pathlib import Path
 import structlog
 
 from argus_atlas import gdal_ops
+from argus_atlas.attribution import attribution_text, job_sources, unattributed
 from argus_atlas.hashing import sha256_file
 from argus_atlas.mercator import intersects, mercator_to_bbox, resolution_at_zoom, tile_bounds
-from argus_atlas.models import AtlasError, FileRef, Grid, JobSidecar, TilesRecord
+from argus_atlas.models import AtlasError, FileRef, Grid, JobSidecar, SourceRecord, TilesRecord
 
 logger = structlog.get_logger()
 
@@ -221,6 +225,10 @@ def tile_job(
         )
     gdal_ops.require_gdal()
     verify_alignment(tif, grid)  # the gate again, right before tiles are written
+    sources = job_sources(sidecar, labels=False)  # the raster's inputs; labels.json credits the names
+    credit = attribution_text(sources)
+    for name in unattributed(sources):
+        logger.warning("tiles.unattributed_source", job_id=sidecar.job_id, source=name)
     record = build_tiles(
         tif,
         out or job_dir / FANTASY_PMTILES,
@@ -229,13 +237,20 @@ def tile_job(
         native_zoom=sidecar.native_zoom,
         name=sidecar.job_id,
         work_dir=job_dir,
-        extra_metadata=bake_metadata(sidecar),
+        extra_metadata={**bake_metadata(sidecar), **source_metadata(sources)},
         sliver_px=CHUNK_SLIVER_PX if sidecar.chunk is not None else 0.0,
-    )
+    ).model_copy(update={"attribution": credit or None})
     sidecar.tiles = record
     sidecar.timings = {**sidecar.timings, "tiles": round(time.perf_counter() - started, 3)}
     save_sidecar(job_dir, sidecar)
     return record
+
+
+def source_metadata(sources: list[SourceRecord]) -> dict:
+    """``extra_metadata`` for :func:`build_tiles`: the ``attribution`` line and every source as JSON."""
+    credit = attribution_text(sources)
+    metadata = {"argus_sources": json.dumps([s.model_dump() for s in sources], ensure_ascii=False)}
+    return {"attribution": credit, **metadata} if credit else metadata
 
 
 def bake_metadata(sidecar) -> dict:  # noqa: ANN001 - JobSidecar

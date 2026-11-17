@@ -39,7 +39,7 @@ Each chunk has its own `fantasy.pmtiles`. `argus-atlas mosaic <style-dir> --out 
 - Chunk tiles are copied unchanged. A tile that two archives both carry with different pixels is an error naming both jobs.
 - Overview zooms below the chunk zoom, down to `--overview-min` (default 5), are cut by `gdal2tiles` from a VRT of the chunks' gated crops, so the painted map stays visible when you zoom out. Gaps between chunks (skipped sea) stay transparent.
 - Every chunk's `labels.geojson` is merged into one, with a name at the same point kept once. It goes to `labels.geojson` in the directory, or `<stem>.labels.geojson` beside a `.pmtiles`.
-- `mosaic.json` (or `<stem>.json`) records the zoom range, bounds, tile count, each source chunk's job id, tile and archive SHA256, and the GDAL argv. Writing to a directory replaces an earlier mosaic there, and refuses a directory that holds anything else.
+- `mosaic.json` (or `<stem>.json`) records the zoom range, bounds, tile count, `attribution` and `sources`, each source chunk's job id, tile and archive SHA256, and the GDAL argv. The attribution is also written into the `.pmtiles` metadata, which MapLibre shows, and the labels' own credit goes into the merged labels file; see [Attribution](#attribution). Writing to a directory replaces an earlier mosaic there, and refuses a directory that holds anything else.
 
 ## Place names
 
@@ -53,3 +53,9 @@ argus-atlas labels --source places.osm.pbf --bbox 10.60,45.44,10.76,45.60 --zoom
 ```
 
 The source is a file you already have: Natural Earth populated places (ranked by `SCALERANK` <= zoom − 2), a Geofabrik `.osm.pbf` or `.osm` (by `place` class: cities from zoom 0, towns from 8, villages from 11, suburbs and hamlets from 13, the rest from 15), or the `places` layer of `argus-atlas osm`. Points outside the box or below the cutoff are dropped. The output has `name`, `rank` and `kind` per point, in EPSG:4326. `labels.json` beside it records the source and its SHA256, the cutoff and the ogr2ogr argv; with `--job`, `job.json` gains a `labels` record and `GET /jobs/{id}/labels` serves the file. No route builds labels. `examples/viewer.html` draws them over the raster, so they stay put while the opacity slider fades the bake. [`examples/sample_places.geojson`](https://github.com/smk762/argus-atlas/blob/main/examples/sample_places.geojson) labels the sample DEM.
+
+## Attribution
+
+Copernicus GLO-30 and OpenStreetMap (ODbL) must be credited wherever their derivatives are published. Each job records its inputs' sources in `job.json` (`sources`) when its controls are built. A DEM counts as Copernicus only when the `<dem>.json` that `argus-atlas dem` wrote beside it vouches for those exact bytes. A layer counts as OpenStreetMap only when the `osm.json` beside it lists that file. Place names are credited by the scheme they were read with: Natural Earth or OpenStreetMap.
+
+`tiles` writes the raster's credit into the archive's `attribution` metadata and into `job.json` (`tiles.attribution`). Labels never reach the pixels, so they don't change it. `mosaic` merges every chunk's sources. The archive credits the raster's sources, the manifest's `attribution` credits everything including the labels, and the merged labels file carries the labels' own credit. A source atlas can't recognise (your own DEM or vector file) is recorded with no attribution, and `tiles` and `mosaic` print a warning naming it: credit it yourself where you publish.

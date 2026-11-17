@@ -47,7 +47,7 @@ Each rule names the check that fails when it is broken. A rule marked **UNENFORC
 | A geocache source read without `opencaching.allow_reuse` | `test_rules::test_every_geocache_source_goes_through_the_licence_gate` |
 | Weights copied into the image, or compose writing the checkout as root | `test_rules::test_weights_are_mounted_read_only_and_never_copied_into_the_image`, `::test_compose_never_runs_as_root_on_the_mounts`. A hand-typed `docker run` as root can't be checked: don't (it leaves root-owned `__pycache__`). |
 | A failed bake reported to the GPU broker as `ok`, or a yielded block re-queued on another node | `test_gpu::test_a_failed_bake_is_reported_to_the_broker_as_failed`, `::test_a_block_holds_one_lease_and_requeues_on_the_same_node_when_asked` |
-| Published tiles without the Copernicus and OSM (ODbL) attribution | **UNENFORCED**: #61 |
+| Published tiles without the Copernicus and OSM (ODbL) attribution | `test_attribution::test_tiles_and_mosaic_carry_copernicus_and_osm_attribution`, `::test_a_dem_of_unknown_origin_is_published_with_a_warning` |
 | `docs/cli.md` out of step with the CLI | CI `docs` job (`make docs-check`) |
 | A dependency change without `make lock` | CI `uv sync --locked` |
 | A release tag without its own CHANGELOG heading | `release.yml` `github-release` job |

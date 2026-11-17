@@ -41,6 +41,8 @@ x-atlas: &atlas
     ARGUS_GPU_BROKER_FALLBACK: ${ARGUS_GPU_BROKER_FALLBACK:-}
     ARGUS_GPU_TENANT: ${ARGUS_GPU_TENANT:-}
     ARGUS_GPU_TENANT_MANIFEST: ${ARGUS_GPU_TENANT_MANIFEST:-/app/gpu-tenant.yaml}  # shipped in the image
+    ARGUS_GPU_LEASE_TIMEOUT_S: ${ARGUS_GPU_LEASE_TIMEOUT_S:-}  # how long a lease may wait in iris's queue
+    ATLAS_GPU_PRIORITY: ${ATLAS_GPU_PRIORITY:-}  # batch unless set; background for a long re-bake
   # Long syntax with create_host_path: false, so a mistyped *_HOST path fails the run instead of
   # docker creating an empty root-owned directory that the container (your uid) cannot write.
   volumes:

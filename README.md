@@ -247,6 +247,8 @@ Every bake holds a GPU lease from the suite's coordinator, set host-wide by `ARG
 | `ARGUS_GPU_BROKER_TOKEN` | the shared caller token (a secret: the host's `.env`, never a repo) |
 | `ARGUS_GPU_TENANT_MANIFEST` | `gpu-tenant.yaml` (the image ships it at `/app/gpu-tenant.yaml`, and compose sets that path) |
 | `ARGUS_GPU_BROKER_FALLBACK` | `lease` (default) or `none` |
+| `ARGUS_GPU_LEASE_TIMEOUT_S` | how long a lease may wait in the broker's queue (default 300 s); a background re-bake needs hours |
+| `ATLAS_GPU_PRIORITY` | the class atlas asks for: `batch` (default) or `background`, which queues behind every other tenant and runs on spare capacity |
 
 ## The alignment gate
 

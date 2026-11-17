@@ -40,6 +40,7 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     for name in (
         "ARGUS_GPU_COORDINATOR",
+        "ATLAS_GPU_PRIORITY",
         "ATLAS_ALLOW_BAKE",
         "ATLAS_JOBS_DIR",
         "ATLAS_DEM_DIR",

@@ -56,7 +56,7 @@ class ComfyUIBackend:
         request_timeout: float = 180.0,
         vanish_after: float = 30.0,
         gpu_coordinator: GpuCoordinator | None = None,
-        priority: gpu.PriorityClass = gpu.DEFAULT_PRIORITY,
+        priority: gpu.PriorityClass | None = None,
     ) -> None:
         # request_timeout is per HTTP call; `timeout` bounds the whole bake —
         # ComfyUI can stall for minutes while a checkpoint first loads.
@@ -73,7 +73,7 @@ class ComfyUIBackend:
         self.vanish_after = vanish_after
         # Default: the host-wide ARGUS_GPU_* environment; unset is no gating.
         self.gpu = gpu_coordinator if gpu_coordinator is not None else gpu.default_coordinator()
-        self.priority = priority
+        self.priority = priority or gpu.priority_from_env()  # ATLAS_GPU_PRIORITY, else batch
         self._session: gpu.TileLeases | None = None
         self._placed: dict[str, Transport] = {}
 

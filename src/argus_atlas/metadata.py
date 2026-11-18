@@ -54,8 +54,8 @@ def bake_payload(
         "controls": sorted(sidecar.controls),
         "dem_sha256": sidecar.dem.sha256,
         "params": params.model_dump(mode="json"),
-        "checkpoint": checkpoint.model_dump(),
-        "lora": lora.model_dump() if lora else None,
+        "checkpoint": checkpoint.model_dump(mode="json"),
+        "lora": lora.model_dump(mode="json") if lora else None,
         "backend": backend,
         "engine_version": engine_version,
         "workflow_sha256": workflow_sha256,
@@ -147,8 +147,11 @@ def _chunks(data: bytes):  # noqa: ANN202 - Iterator[tuple[bytes, bytes]]
     while pos + 8 <= len(data):
         (length,) = struct.unpack(">I", data[pos : pos + 4])
         kind = data[pos + 4 : pos + 8]
-        body = data[pos + 8 : pos + 8 + length]
-        yield kind, body
+        if pos + 12 + length > len(data):
+            raise AtlasError("truncated PNG chunk")
+        yield kind, data[pos + 8 : pos + 8 + length]
+        if kind == b"IEND":
+            return  # anything after the image end is not a chunk
         pos += 12 + length
 
 
@@ -187,8 +190,20 @@ def _write_atomic(path: Path, data: bytes) -> None:
         raise
 
 
+def _payload(text: str | None) -> dict | None:
+    """*text* as a payload, or ``None`` when it is not a JSON object (another tool's description)."""
+    if not text:
+        return None
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def read_png_payload(path: Path) -> dict | None:
-    """The embedded payload, from the ``tEXt`` chunk, else the ``eXIf`` description; ``None`` if absent."""
+    """The embedded payload, from the ``tEXt`` chunk, else the ``eXIf`` description; ``None`` if absent
+    (an ``eXIf`` description another tool wrote is not a payload)."""
     data = path.read_bytes()
     exif_text = None
     for kind, body in _chunks(data):
@@ -196,4 +211,4 @@ def read_png_payload(path: Path) -> dict | None:
             return json.loads(body[len(TEXT_KEY) + 1 :].decode("latin-1"))
         if kind == b"eXIf":
             exif_text = parse_exif_description(body)
-    return json.loads(exif_text) if exif_text else None
+    return _payload(exif_text)

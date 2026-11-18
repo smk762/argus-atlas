@@ -100,3 +100,32 @@ def test_truncated_ifd_is_none_not_an_error() -> None:
     blob = metadata.build_exif('{"a":1}')
     head = blob[:8] + b"\xff\xff" + blob[10:20]  # claims 65535 entries, holds one
     assert metadata.parse_exif_description(head) is None
+
+
+def test_a_truncated_png_chunk_is_an_error_and_nothing_follows_iend(tmp_path: Path) -> None:
+    png = write_png(tmp_path / "f.png", 8, 8)
+    metadata.embed_png(png, {"a": 1})
+    whole = png.read_bytes()
+    cut = tmp_path / "cut.png"
+    cut.write_bytes(whole[: whole.index(b"tEXt") + 10])  # the chunk says more bytes than the file holds
+    with pytest.raises(AtlasError, match="truncated PNG chunk"):
+        metadata.read_png_payload(cut)
+    trailing = tmp_path / "trailing.png"
+    trailing.write_bytes(whole + b"\x00\x00\x00\x02junkxx")
+    assert [kind for kind, _ in metadata._chunks(trailing.read_bytes())][-1] == b"IEND"
+    assert metadata.read_png_payload(trailing) == {"a": 1}
+
+
+@pytest.mark.parametrize("description", ["Untitled", "42", "[1, 2]", '"text"', "{broken"])
+def test_another_tools_exif_description_is_not_a_payload(tmp_path: Path, description: str) -> None:
+    png = write_png(tmp_path / "f.png", 8, 8)
+    data = png.read_bytes()
+    exif = metadata._chunk(b"eXIf", metadata.build_exif(description, software="SomeEditor 1.0"))
+    png.write_bytes(data[:33] + exif + data[33:])  # after IHDR (8 + 25 bytes)
+    assert metadata.read_png_payload(png) is None
+
+
+def test_the_payload_is_json_all_the_way_down(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    assert json.loads(metadata.payload_json(payload)) == payload
+    assert payload["checkpoint"] == {"name": "ck.safetensors", "sha256": "a" * 64} and payload["lora"] is None

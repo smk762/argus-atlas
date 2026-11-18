@@ -171,12 +171,15 @@ def test_controls_path_escape_is_400(client: TestClient, roots: dict[str, Path])
     assert resp.status_code == 400 and "escapes" in resp.json()["detail"]
     outside = roots["dem"].parent / "outside.tif"
     outside.write_bytes(b"x")
-    assert client.post("/controls", json={**body, "dem": str(outside)}).status_code == 400
+    resp = client.post("/controls", json={**body, "dem": str(outside)})
+    assert resp.status_code == 400 and "escapes" in resp.json()["detail"]
     # A name under the root that doesn't exist is a 404, not a traversal error.
     assert client.post("/controls", json={**body, "dem": "missing.tif"}).status_code == 404
     # A land file is held to the same root.
     (roots["dem"] / "dem.tif").write_bytes(b"x")
-    assert client.post("/controls", json={**body, "dem": "dem.tif", "land": "/etc/hosts"}).status_code == 400
+    for land in ("/etc/hosts", "../outside.tif"):
+        resp = client.post("/controls", json={**body, "dem": "dem.tif", "land": land})
+        assert resp.status_code == 400 and "escapes" in resp.json()["detail"], land
     # Bad bbox strings are a 400 too, before GDAL is consulted.
     assert client.post("/controls", json={"dem": "dem.tif", "bbox": "1,2,3"}).status_code == 400
 
@@ -307,9 +310,11 @@ def test_purge_stays_inside_the_jobs_dir(roots: dict[str, Path], tmp_path: Path)
     (roots["jobs"] / "link").symlink_to(outside, target_is_directory=True)
     (roots["jobs"] / "notajob").mkdir()  # no job.json: not a job, never deleted
     c = _deleting(roots)
-    assert c.post("/purge/..", json=CONFIRM).status_code in (400, 404)
-    assert c.post("/purge/..evil", json=CONFIRM).status_code == 400
-    assert c.post("/purge/..%2Foutside", json=CONFIRM).status_code in (400, 404)
+    # Escaped, so the client does not fold the dots away and the id reaches the handler.
+    # (`..%2Foutside` decodes to two segments and never matches the route at all.)
+    for bad in ("%2E%2E", "%2E", "..%5Coutside", "..evil", ".hidden"):
+        resp = c.post(f"/purge/{bad}", json=CONFIRM)
+        assert resp.status_code == 400 and "invalid job id" in resp.json()["detail"], bad
     assert c.post("/purge/link", json=CONFIRM).status_code == 404
     assert c.post("/purge/notajob", json=CONFIRM).status_code == 404
     assert c.post("/purge", json=CONFIRM).json() == {"deleted": [], "skipped": []}

@@ -107,10 +107,14 @@ def test_seam_templates_mask_the_latent(name: str) -> None:
 def test_a_file_in_the_cwd_cannot_replace_the_packaged_template(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    (tmp_path / EXAMPLE_TEMPLATE_SEAM_NOLORA).write_text('{"1": {"class_type": "Stub", "inputs": {}}}', "utf-8")
+    packaged = example_template(EXAMPLE_TEMPLATE_SEAM_NOLORA)  # read before the cwd holds a file of that name
+    stub = {"1": {"class_type": "Stub", "inputs": {}}}
+    (tmp_path / EXAMPLE_TEMPLATE_SEAM_NOLORA).write_text(json.dumps(stub), "utf-8")
     monkeypatch.chdir(tmp_path)
     backend = backend_from_env(workflow=recipe_workflow(Recipe(name="a", checkpoint="c")))
-    assert backend.template == example_template(EXAMPLE_TEMPLATE_SEAM_NOLORA)  # type: ignore[attr-defined]
+    template = backend.template  # type: ignore[attr-defined]
+    assert template == packaged and template != stub
+    assert all(node["class_type"] != "Stub" for node in template.values())
 
 
 def test_a_name_is_never_a_path(tmp_path: Path) -> None:

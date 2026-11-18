@@ -54,6 +54,8 @@ class LayerPreset:
     min_zoom: int = 0  # below this the layer is empty on purpose
 
     def tags_for(self, zoom: int) -> dict[str, list[str] | None]:
+        if zoom < self.min_zoom:
+            return {}
         applicable = [z for z in self.rules if z <= zoom]
         return self.rules[max(applicable)] if applicable else {}
 
@@ -263,11 +265,8 @@ def osm_timestamp(osm: Path) -> str | None:
     """The ``osm_base`` timestamp in the extract's header, if present."""
     with osm.open("rb") as f:
         head = f.read(2048).decode("utf-8", "replace")
-    marker = 'osm_base="'
-    if marker in head:
-        start = head.index(marker) + len(marker)
-        return head[start : head.index('"', start)]
-    return None
+    found = re.search(r'osm_base="([^"]*)"', head)  # a value cut off by the read is no timestamp
+    return found.group(1) if found else None
 
 
 def fetch_osm(

@@ -55,6 +55,8 @@ def gdal_version() -> str | None:
         out = subprocess.run(["gdalinfo", "--version"], capture_output=True, text=True, timeout=30, check=False)
     except (OSError, subprocess.SubprocessError):
         return None
+    if out.returncode != 0:
+        return None  # on PATH but broken: its stderr is an error, not a version
     text = (out.stdout or out.stderr).strip()
     return text or None
 
@@ -257,7 +259,7 @@ def dem_clip_argv(
         "-ot",
         "Float32",
         "-wo",
-        f"INIT_DEST={fill:g}",
+        f"INIT_DEST={float(fill)!r}",
         "-co",
         "COMPRESS=DEFLATE",
         "-co",
@@ -291,7 +293,10 @@ def hillshade_argv(
 
 def slope_argv(dem_3857: Path, dst: Path, *, z_factor: float = 1.0) -> list[str]:
     """Slope in degrees (Float32). ``gdaldem slope`` has no ``-z``; its ``-s`` divides the
-    horizontal distances instead, so heights times *z_factor* is ``-s 1/z_factor``."""
+    horizontal distances instead, so heights times *z_factor* is ``-s 1/z_factor``.
+    *z_factor* must be a positive number (``ValueError`` otherwise)."""
+    if not (math.isfinite(z_factor) and z_factor > 0):
+        raise ValueError(f"z_factor must be a positive number, got {z_factor!r}")
     scale = ["-s", repr(1.0 / z_factor)] if z_factor != 1.0 else []
     return ["gdaldem", "slope", "-compute_edges", *scale, "-co", "COMPRESS=DEFLATE", str(dem_3857), str(dst)]
 

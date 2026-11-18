@@ -452,3 +452,40 @@ def test_seams_rerun_drops_footprints_of_gone_neighbours(dem: Path, tmp_path: Pa
     b = run_chunk(dem, B, RECIPE, b_dir, size=SIZE, margin=MARGIN, controls_only=True)
     assert b.chunk is not None and b.chunk.neighbours == []
     assert _stats(b_dir / "seam_mask.png")[0]["minimum"] == 255
+
+
+@requires_gdal
+def test_a_crop_that_cannot_be_read_is_not_a_published_chunk(
+    dem: Path, tmp_path: Path, models_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from argus_atlas import chunks as chunks_mod
+
+    a = _chunk(dem, tmp_path, A, models_dir)
+    assert chunks_mod.published_chunk(tmp_path / a.job_id) is not None
+
+    def gone(path: Path) -> str:  # deleted or replaced between the listing and the read
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(chunks_mod, "sha256_file", gone)
+    assert chunks_mod.published_chunk(tmp_path / a.job_id) is None
+
+
+@requires_gdal
+def test_a_neighbours_crop_must_sit_in_its_job_dir(dem: Path, tmp_path: Path, models_dir: Path) -> None:
+    root = tmp_path / "style"
+    a = _chunk(dem, root, A, models_dir)
+    z, x, y = parse_tile(B)
+    grids = chunk_grids(z, x, y, size=SIZE, margin=MARGIN)
+    probe = ChunkRecord(z=z, x=x, y=y, size=SIZE, margin=MARGIN, inner=grids[1])
+    assert [n.tile for n in find_neighbours(root, "antique", probe)] == [A]
+
+    # A job.json naming a file outside its job, with that file's own digest: the digest proves nothing.
+    outside = tmp_path / "elsewhere.tif"
+    outside.write_bytes((root / a.job_id / CHUNK_TIF).read_bytes())
+    job = root / a.job_id / "job.json"
+    for path in (str(outside), "../../elsewhere.tif"):
+        data = json.loads(job.read_text())
+        data["chunk"]["image"]["path"] = path
+        job.write_text(json.dumps(data))
+        with pytest.raises(AtlasError, match="outside the job directory"):
+            find_neighbours(root, "antique", probe)

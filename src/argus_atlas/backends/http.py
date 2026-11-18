@@ -7,6 +7,7 @@ so the backend has no HTTP runtime dependency. Transport-level failures become
 
 from __future__ import annotations
 
+import http.client
 import json
 import secrets
 import urllib.error
@@ -25,6 +26,12 @@ class Transport(Protocol):
     def post_file(self, path: str, *, field: str, filename: str, data: bytes, fields: dict[str, str]) -> dict: ...
 
 
+def _quoted(value: str) -> str:
+    """*value* made safe inside a quoted ``Content-Disposition`` parameter (the WHATWG form-data
+    escapes), so a name or filename cannot close its quote or start a header line."""
+    return value.replace("\n", "%0A").replace("\r", "%0D").replace('"', "%22")
+
+
 def encode_multipart(
     *, field: str, filename: str, data: bytes, fields: dict[str, str], content_type: str = "image/png"
 ) -> tuple[bytes, str]:
@@ -33,10 +40,10 @@ def encode_multipart(
     parts: list[bytes] = []
     for name, value in fields.items():
         parts.append(
-            f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode(),
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{_quoted(name)}"\r\n\r\n{value}\r\n'.encode(),
         )
     parts.append(
-        f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"; filename="{filename}"\r\n'
+        f'--{boundary}\r\nContent-Disposition: form-data; name="{_quoted(field)}"; filename="{_quoted(filename)}"\r\n'
         f"Content-Type: {content_type}\r\n\r\n".encode()
         + data
         + b"\r\n"
@@ -61,9 +68,12 @@ class UrllibTransport:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 return resp.read()
         except urllib.error.HTTPError as exc:
-            body = exc.read()[:400].decode("utf-8", "replace") if exc.fp else ""
+            try:
+                body = exc.read()[:400].decode("utf-8", "replace") if exc.fp else ""
+            except (OSError, http.client.HTTPException):
+                body = ""  # the status is what matters; the body could not be read
             raise BackendError(f"{self.label} {method} {path} returned HTTP {exc.code}: {body}") from exc
-        except (urllib.error.URLError, OSError) as exc:
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
             raise BackendError(f"{self.label} request to {req.full_url} failed: {exc}") from exc
 
     def _loads(self, raw: bytes) -> dict:

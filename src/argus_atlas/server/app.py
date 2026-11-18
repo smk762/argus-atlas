@@ -298,7 +298,8 @@ def create_app(
         vectors: list[str] = []
         extracts: list[dict] = []
         if dem_root.is_dir():
-            for path in sorted(dem_root.rglob("*")):  # nosemgrep: handler-scans-all - the endpoint lists the operator's input dir; it is small and the answer is the whole listing
+            # nosemgrep: handler-scans-all - the endpoint lists the operator's input dir; it is small and the answer is the whole listing
+            for path in sorted(dem_root.rglob("*")):
                 rel = path.relative_to(dem_root)
                 if len(rel.parts) > 3 or not path.is_file():
                     continue
@@ -601,7 +602,8 @@ def create_app(
         deleted: list[str] = []
         skipped: list[str] = []
         if jobs_root.is_dir():
-            for child in sorted(jobs_root.iterdir()):  # nosemgrep: handler-scans-all - purge-all: visiting every job is the operation
+            # nosemgrep: handler-scans-all - purge-all: visiting every job is the operation
+            for child in sorted(jobs_root.iterdir()):
                 if not is_safe_id(child.name) or child.is_symlink() or not (child / SIDECAR_NAME).is_file():
                     continue
                 try:

@@ -25,7 +25,7 @@ from argus_atlas.chunks import (
 )
 from argus_atlas.georef import AlignmentError
 from argus_atlas.hashing import sha256_file
-from argus_atlas.jobs import copy_job, load_sidecar
+from argus_atlas.jobs import copy_job, load_sidecar, save_sidecar
 from argus_atlas.mercator import mercator_to_bbox, resolution_at_zoom, tile_bounds
 from argus_atlas.metadata import read_png_payload
 from argus_atlas.models import AtlasError, BakeParams, ChunkRecord, Recipe
@@ -454,35 +454,57 @@ def test_seams_rerun_drops_footprints_of_gone_neighbours(dem: Path, tmp_path: Pa
     assert _stats(b_dir / "seam_mask.png")[0]["minimum"] == 255
 
 
-@requires_gdal
-def test_a_crop_that_cannot_be_read_is_not_a_published_chunk(
-    dem: Path, tmp_path: Path, models_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _hand_written_chunk(root: Path, tile: str) -> Path:
+    """A published chunk of ``antique`` written by hand (no GDAL): job.json plus a crop with its digest."""
+    from argus_atlas.models import BakeRecord, FileRef, ModelRef
+    from tests.test_server import _seed_job
+
+    z, x, y = parse_tile(tile)
+    sidecar = _seed_job(root, chunk_job_id("antique", z, x, y))
+    job_dir = root / sidecar.job_id
+    (job_dir / CHUNK_TIF).write_bytes(b"crop of " + tile.encode())
+    crop = FileRef(path=CHUNK_TIF, sha256=sha256_file(job_dir / CHUNK_TIF))
+    _, inner = chunk_grids(z, x, y, size=SIZE, margin=MARGIN)
+    sidecar.chunk = ChunkRecord(z=z, x=x, y=y, size=SIZE, margin=MARGIN, inner=inner, image=crop)
+    sidecar.recipe = RECIPE
+    sidecar.bake = BakeRecord(
+        params=BakeParams(checkpoint="sd_xl_base_1.0.safetensors", seed=7, recipe="antique"),
+        backend="fake",
+        engine_version="0",
+        checkpoint=ModelRef(name="sd_xl_base_1.0.safetensors", sha256="b" * 64),
+        image=FileRef(path="fantasy.png", sha256="c" * 64),
+        aligned=True,
+        completed_at="2026-10-17T00:00:00+00:00",
+    )
+    save_sidecar(job_dir, sidecar)
+    return job_dir
+
+
+def test_a_crop_that_cannot_be_read_is_not_a_published_chunk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from argus_atlas import chunks as chunks_mod
 
-    a = _chunk(dem, tmp_path, A, models_dir)
-    assert chunks_mod.published_chunk(tmp_path / a.job_id) is not None
+    job_dir = _hand_written_chunk(tmp_path, A)
+    assert chunks_mod.published_chunk(job_dir) is not None
 
     def gone(path: Path) -> str:  # deleted or replaced between the listing and the read
         raise FileNotFoundError(path)
 
     monkeypatch.setattr(chunks_mod, "sha256_file", gone)
-    assert chunks_mod.published_chunk(tmp_path / a.job_id) is None
+    assert chunks_mod.published_chunk(job_dir) is None
 
 
-@requires_gdal
-def test_a_neighbours_crop_must_sit_in_its_job_dir(dem: Path, tmp_path: Path, models_dir: Path) -> None:
+def test_a_neighbours_crop_must_sit_in_its_job_dir(tmp_path: Path) -> None:
     root = tmp_path / "style"
-    a = _chunk(dem, root, A, models_dir)
+    job_dir = _hand_written_chunk(root, A)
     z, x, y = parse_tile(B)
-    grids = chunk_grids(z, x, y, size=SIZE, margin=MARGIN)
-    probe = ChunkRecord(z=z, x=x, y=y, size=SIZE, margin=MARGIN, inner=grids[1])
+    _, inner = chunk_grids(z, x, y, size=SIZE, margin=MARGIN)
+    probe = ChunkRecord(z=z, x=x, y=y, size=SIZE, margin=MARGIN, inner=inner)
     assert [n.tile for n in find_neighbours(root, "antique", probe)] == [A]
 
     # A job.json naming a file outside its job, with that file's own digest: the digest proves nothing.
     outside = tmp_path / "elsewhere.tif"
-    outside.write_bytes((root / a.job_id / CHUNK_TIF).read_bytes())
-    job = root / a.job_id / "job.json"
+    outside.write_bytes((job_dir / CHUNK_TIF).read_bytes())
+    job = job_dir / "job.json"
     for path in (str(outside), "../../elsewhere.tif"):
         data = json.loads(job.read_text())
         data["chunk"]["image"]["path"] = path

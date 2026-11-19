@@ -45,10 +45,19 @@ UA = "argus-atlas-fetch/1 (+https://github.com/smk762/argus-atlas)"
 
 
 def model_id(arg: str) -> int:
-    """Accept a bare id or a civitai.com/models/<id>[/slug] URL."""
-    m = re.search(r"(?:^|/models/)(\d+)", arg)
+    """Accept a bare id or a civitai.com/models/<id>[/slug] URL, nothing else.
+
+    A download link (``/api/download/models/<id>``) carries a *version* id, so it is refused
+    rather than read as a model id.
+    """
+    if re.fullmatch(r"\d+", arg):
+        return int(arg)
+    url = urllib.parse.urlsplit(arg if "://" in arg else "https://" + arg)
+    m = re.match(r"/models/(\d+)(?:/|$)", url.path) if url.hostname and "." in url.hostname else None
     if not m:
-        raise argparse.ArgumentTypeError(f"not a Civitai model id or URL: {arg!r}")
+        raise argparse.ArgumentTypeError(
+            f"not a Civitai model id or model page URL: {arg!r} (a download link holds a version id: use --version)"
+        )
     return int(m.group(1))
 
 
@@ -147,7 +156,7 @@ def describe(model: dict, version: dict | None, *, all_matching: list[dict] | No
             + "\n    (newest is picked; --version <id> for another)"
         )
     if version is None:
-        bases = sorted({v.get("baseModel") for v in model.get("modelVersions", [])})
+        bases = sorted({v["baseModel"] for v in model.get("modelVersions", []) if v.get("baseModel")})
         return head + f"\n    no matching version; available base models: {bases}"
     return head + "\n" + describe_version(version)
 

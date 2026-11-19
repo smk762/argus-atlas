@@ -65,6 +65,19 @@ def test_merge_refuses_a_tile_two_archives_disagree_on(monkeypatch: pytest.Monke
         merge_archives([(tmp_path / "a", Fake("a")), (tmp_path / "c", Fake("c"))])  # type: ignore[list-item]
 
 
+def test_chunks_without_tiles_or_chunk_records_are_mosaic_errors(tmp_path: Path) -> None:
+    class Bare:
+        job_id = "antique-14-1-1"
+        tiles = None
+        chunk = None
+
+    with pytest.raises(MosaicError, match="antique-14-1-1 has no tile archive"):
+        merge_archives([(tmp_path, Bare())])  # type: ignore[list-item]
+    for chunks in ([], [(tmp_path, Bare())]):
+        with pytest.raises(MosaicError, match="no chunk jobs"):
+            mosaic_mod.union_grid(chunks)  # type: ignore[arg-type]
+
+
 @requires_gdal
 def test_mosaic_xyz_has_every_chunk_tile_overviews_and_one_label(style: Path, tmp_path: Path) -> None:
     jobs = [style / chunk_job_id("antique", *parse_tile(t)) for t in (A, B)]

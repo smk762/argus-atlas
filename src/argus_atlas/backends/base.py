@@ -114,4 +114,8 @@ def hash_model(resolve: ModelResolver, name: str) -> ModelRef:
         path = resolve(name)
     except Exception as exc:  # the resolver signals "not found" however it likes
         raise BackendError(f"cannot hash model {name!r}: {exc}") from exc
-    return ModelRef(name=name, sha256=sha256_cached(path))
+    try:
+        digest = sha256_cached(path)
+    except OSError as exc:  # missing, unreadable, a directory, or gone since it was resolved
+        raise BackendError(f"cannot hash model {name!r}: {exc}") from exc
+    return ModelRef(name=name, sha256=digest)

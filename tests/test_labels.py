@@ -46,6 +46,19 @@ def test_cutoffs_by_zoom() -> None:
     assert "hamlet" in place_classes(13) and "locality" not in place_classes(14)
 
 
+def test_an_infinite_scalerank_drops_the_point() -> None:
+    for bad in ("inf", "-Infinity", "1e999", float("inf"), "nan", None, "x"):
+        assert labels._rank({"scalerank": bad}, "naturalearth", 8) is None
+    assert labels._rank({"scalerank": "3.0"}, "naturalearth", 8) == (3, "populated place")
+
+
+def test_a_manifest_with_malformed_commands_records_none(tmp_path: Path) -> None:
+    out = tmp_path / "labels.geojson"
+    for bad in ('{"commands": null}', '{"commands": 3}', '{"commands": true}', "[]", "{not json", '{"commands": [1]}'):
+        labels.manifest_path(out).write_text(bad, encoding="utf-8")
+        assert labels._manifest_commands(out) == []
+
+
 def test_rank_features_osm_scheme_and_drops() -> None:
     features = [
         _point(10.10, 45.05, name="Town", place="town"),

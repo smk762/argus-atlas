@@ -112,7 +112,8 @@ def merge_archives(chunks: list[tuple[Path, JobSidecar]]) -> dict[TileKey, tuple
     """All chunk tiles as ``{(z, x, y): (png, job_id)}``; MosaicError where two archives disagree."""
     merged: dict[TileKey, tuple[bytes, str]] = {}
     for job_dir, sidecar in chunks:
-        assert sidecar.tiles is not None
+        if sidecar.tiles is None:
+            raise MosaicError(f"job {sidecar.job_id} has no tile archive")
         for key, data in read_archive(job_dir / sidecar.tiles.archive.path).items():
             held = merged.get(key)
             if held is not None and held[0] != data:
@@ -125,6 +126,8 @@ def merge_archives(chunks: list[tuple[Path, JobSidecar]]) -> dict[TileKey, tuple
 def union_grid(chunks: list[tuple[Path, JobSidecar]]) -> Grid:
     """A grid over every chunk's tile at the finest chunk resolution: the mosaic's bounds."""
     inners = [s.chunk.inner for _, s in chunks if s.chunk is not None]
+    if not inners:
+        raise MosaicError("no chunk jobs to mosaic")
     xmin, ymin = min(g.ulx for g in inners), min(g.lry for g in inners)
     xmax, ymax = max(g.lrx for g in inners), max(g.uly for g in inners)
     res = min(g.resolution for g in inners)

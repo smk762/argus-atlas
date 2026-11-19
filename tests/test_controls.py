@@ -60,8 +60,10 @@ def test_controls_with_land_mask(dem: Path, land: Path, tmp_path: Path) -> None:
     info = gdal_ops.gdalinfo_json(job_dir / "land_mask.tif")
     assert info["size"] == [sidecar.grid.width, sidecar.grid.height]
     # Western half burnt (255), eastern half empty (0): both values present.
-    stats = gdal_ops.gdalinfo_json(job_dir / "land_mask.tif")
-    assert stats["bands"][0]["type"] == "Byte"
+    assert info["bands"][0]["type"] == "Byte"
+    counts = _value_counts(job_dir / "land_mask.tif", tmp_path)
+    assert set(counts) == {"0", "255"}, counts
+    assert 0.4 < counts["255"] / (counts["0"] + counts["255"]) < 0.6, counts
     assert any(c.tool == "gdal_rasterize" for c in sidecar.commands)
 
 

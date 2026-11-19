@@ -16,6 +16,7 @@ the image; :func:`packer_status` reports both for ``doctor``.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 import time
@@ -109,6 +110,8 @@ def pack_pmtiles(
     except ImportError as exc:
         raise TilesError("packing PMTiles needs: pip install argus-atlas[tiles]") from exc
 
+    if not tiles:
+        raise TilesError("no tiles to pack")
     zooms = sorted({z for z, _, _, _ in tiles})
     bbox = mercator_to_bbox(*grid.bounds)
     e7 = 10_000_000
@@ -137,10 +140,16 @@ def pack_pmtiles(
     }
     ordered = sorted(((zxy_to_tileid(z, x, y), path) for z, x, y, path in tiles), key=lambda t: t[0])
     out.parent.mkdir(parents=True, exist_ok=True)
-    with write(str(out)) as writer:
-        for tile_id, path in ordered:
-            writer.write_tile(tile_id, path.read_bytes())
-        writer.finalize(header, metadata)
+    # Packed beside *out* and moved over it only once complete: a failure keeps the archive already there.
+    partial = out.with_name(out.name + ".tmp")
+    try:
+        with write(str(partial)) as writer:
+            for tile_id, path in ordered:
+                writer.write_tile(tile_id, path.read_bytes())
+            writer.finalize(header, metadata)
+        os.replace(partial, out)
+    finally:
+        partial.unlink(missing_ok=True)
     return len(ordered)
 
 

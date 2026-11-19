@@ -252,7 +252,9 @@ def find_neighbours(
             raise AtlasError(f"neighbour {other.job_id} ({c.tile}) is a {c.size} px chunk, this one is {chunk.size} px")
         if c.tile in found:
             raise AtlasError(f"two jobs hold chunk {c.tile} of {recipe}: {found[c.tile].job_id} and {other.job_id}")
-        image = child / c.image.path
+        image = (child / c.image.path).resolve()
+        if not image.is_relative_to(real):
+            raise AtlasError(f"neighbour {other.job_id}: its crop {c.image.path!r} is outside the job directory")
         if not image.is_file() or sha256_file(image) != c.image.sha256:
             raise AtlasError(f"neighbour {other.job_id}: {c.image.path} is missing or changed since its job.json")
         if relief is not None and relief_key(other.relief) != relief:
@@ -264,7 +266,7 @@ def find_neighbours(
         if recipe_sha256 is not None and other.recipe.sha256 != recipe_sha256:
             logger.warning("chunks.neighbour_recipe_changed", neighbour=other.job_id, tile=c.tile, recipe=recipe)
         found[c.tile] = ChunkNeighbour(
-            tile=c.tile, job_id=other.job_id, image=FileRef(path=str(image.resolve()), sha256=c.image.sha256)
+            tile=c.tile, job_id=other.job_id, image=FileRef(path=str(image), sha256=c.image.sha256)
         )
     return [found[t] for t in sorted(found)]
 
@@ -548,8 +550,10 @@ def published_chunk(job_dir: Path) -> JobSidecar | None:
     image = sidecar.chunk.image if sidecar.chunk is not None else None
     if image is None:
         return None
-    path = job_dir / image.path
-    return sidecar if path.is_file() and sha256_file(path) == image.sha256 else None
+    try:
+        return sidecar if sha256_file(job_dir / image.path) == image.sha256 else None
+    except OSError:  # missing, or gone/unreadable since: not a published crop
+        return None
 
 
 def run_chunk(

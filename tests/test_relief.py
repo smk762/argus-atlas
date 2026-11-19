@@ -7,6 +7,7 @@ import math
 import shutil
 from pathlib import Path
 
+import click
 import pytest
 import typer
 from fastapi.testclient import TestClient
@@ -15,7 +16,7 @@ from typer.testing import CliRunner
 from argus_atlas import gdal_ops
 from argus_atlas.chunks import find_neighbours, run_chunk
 from argus_atlas.cli import app
-from argus_atlas.controls import build_controls, resolve_relief
+from argus_atlas.controls import build_controls, plan_grid, resolve_relief
 from argus_atlas.hashing import sha256_bytes
 from argus_atlas.jobs import load_sidecar, save_sidecar
 from argus_atlas.mercator import lonlat_to_mercator, scale_factor
@@ -97,11 +98,17 @@ def test_cli_rejects_a_bad_z_factor(tmp_path: Path) -> None:
     args = ["controls", "--dem", str(tmp_path / "x.tif"), "--bbox", TEST_BBOX.as_text(), "--out", str(tmp_path / "j")]
     result = runner.invoke(app, [*args, "--z-factor", "steep"])
     assert result.exit_code == 2 and "--z-factor" in result.output
-    assert runner.invoke(app, [*args, "--ve", "0"]).exit_code == 2
+    # Below zero is a usage error naming the option; zero passes Typer's range and is refused by
+    # resolve_relief (asserted directly: the CLI gets there only with GDAL and a real DEM).
+    result = runner.invoke(app, [*args, "--ve", "-1"])
+    # Unstyled: under CI rich colours the option name in pieces.
+    assert result.exit_code == 2 and "--vertical-exaggeration" in click.unstyle(result.output)
+    with pytest.raises(AtlasError, match="vertical exaggeration must be a positive number"):
+        resolve_relief(plan_grid(TEST_BBOX), vertical_exaggeration=0.0)
     commands = typer.main.get_command(app).commands  # type: ignore[attr-defined]
     for name in ("controls", "chunk", "chunks"):
         flags = {o for p in commands[name].params for o in p.opts}
-        assert {"--z-factor", "--vertical-exaggeration"} <= flags, name
+        assert {"--z-factor", "--vertical-exaggeration", "--ve"} <= flags, name
 
 
 @requires_gdal

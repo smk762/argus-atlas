@@ -167,6 +167,12 @@ class Grid(BaseModel):
             raise ValueError(f"grid CRS must be {CRS}, got {value!r}")
         return CRS
 
+    @model_validator(mode="after")
+    def _pixels_are_square(self) -> Grid:
+        if not math.isclose(self.pixel_width, -self.pixel_height, rel_tol=1e-9):
+            raise ValueError(f"grid pixels must be square, got {self.pixel_width} x {-self.pixel_height} m")
+        return self
+
     @property
     def resolution(self) -> float:
         """Ground resolution in metres per pixel (pixels are square)."""

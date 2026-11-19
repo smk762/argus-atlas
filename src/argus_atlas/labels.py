@@ -89,7 +89,7 @@ def _rank(props: dict, scheme: str, zoom: int) -> tuple[int, str] | None:
     if scheme == "naturalearth":
         try:
             rank = int(float(_field(props, "scalerank")))  # type: ignore[arg-type]
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):  # OverflowError: an infinite rank
             return None
         kind = str(_field(props, "featurecla") or "populated place").lower()
         return (rank, kind) if rank <= max_scalerank(zoom) else None
@@ -219,7 +219,7 @@ def _manifest_commands(out: Path) -> list[GdalCommand]:
     try:
         manifest = json.loads(manifest_path(out).read_text(encoding="utf-8"))
         return [GdalCommand.model_validate(c) for c in manifest.get("commands", [])]
-    except (OSError, ValueError, AttributeError):
+    except (OSError, ValueError, AttributeError, TypeError):  # TypeError: "commands" is not a list
         return []
 
 

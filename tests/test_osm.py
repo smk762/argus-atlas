@@ -129,3 +129,19 @@ def test_overpass_runtime_error_in_a_200_is_a_failure(monkeypatch: pytest.Monkey
     ok = b'<?xml version="1.0"?><osm version="0.6"><remark>fine</remark><node id="1" lat="0" lon="0"/></osm>'
     monkeypatch.setattr(osm._NO_REDIRECT, "open", lambda req, timeout: Resp(ok))
     assert osm.overpass_fetch("[out:xml];") == ok
+
+
+def test_an_osm_base_cut_off_by_the_read_is_no_timestamp(tmp_path: Path) -> None:
+    extract = tmp_path / "x.osm"
+    extract.write_text("<osm>" + " " * 2020 + '<meta osm_base="2026-10-17T10:00:00Z"/></osm>', encoding="utf-8")
+    assert osm.osm_timestamp(extract) is None  # the closing quote is past the 2048 bytes read
+    extract.write_text('<osm><meta osm_base="2026-10-17T10:00:00Z"/></osm>', encoding="utf-8")
+    assert osm.osm_timestamp(extract) == "2026-10-17T10:00:00Z"
+    extract.write_text("<osm/>", encoding="utf-8")
+    assert osm.osm_timestamp(extract) is None
+
+
+def test_a_layer_is_empty_below_its_min_zoom() -> None:
+    preset = osm.LayerPreset("polygon", "multipolygons", {0: {"natural": ["water"]}, 10: {"natural": None}}, min_zoom=8)
+    assert preset.tags_for(5) == {} and preset.tags_for(7) == {}
+    assert preset.tags_for(8) == {"natural": ["water"]} and preset.tags_for(12) == {"natural": None}

@@ -111,6 +111,8 @@ def plan_grid(
         raise AtlasError("give --long-side or --resolution, not both")
     xmin, ymin, xmax, ymax = bbox_to_mercator(bbox)
     w_m, h_m = xmax - xmin, ymax - ymin
+    if not (math.isfinite(w_m) and math.isfinite(h_m) and w_m > 0 and h_m > 0):
+        raise AtlasError(f"bbox {bbox.as_text()} has no extent in Web Mercator ({w_m:g} x {h_m:g} m)")
 
     if resolution is None:
         side = DEFAULT_LONG_SIDE if long_side is None else long_side
@@ -120,7 +122,7 @@ def plan_grid(
             )
         res = max(w_m, h_m) / side
     else:
-        if resolution <= 0:
+        if not (math.isfinite(resolution) and resolution > 0):
             raise AtlasError(f"resolution must be positive metres per pixel, got {resolution}")
         res = float(resolution)
 

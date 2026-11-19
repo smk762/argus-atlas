@@ -55,3 +55,37 @@ def _grid():  # noqa: ANN202
     from argus_atlas.models import Grid
 
     return Grid(width=64, height=64, ulx=0.0, uly=0.0, pixel_width=1.0, pixel_height=-1.0)
+
+
+def test_slope_refuses_a_z_factor_that_is_not_positive(tmp_path: Path) -> None:
+    for bad in (0.0, -2.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="z_factor must be a positive number"):
+            gdal_ops.slope_argv(tmp_path / "dem.tif", tmp_path / "slope.tif", z_factor=bad)
+    argv = gdal_ops.slope_argv(tmp_path / "dem.tif", tmp_path / "slope.tif", z_factor=2.0)
+    assert argv[argv.index("-s") + 1] == "0.5"
+
+
+def test_a_failing_gdalinfo_has_no_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gdal_ops.shutil, "which", lambda name: "/usr/bin/" + name)
+
+    def broken(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(
+            argv, 127, stdout="", stderr="gdalinfo: error while loading shared libraries"
+        )
+
+    monkeypatch.setattr(gdal_ops.subprocess, "run", broken)
+    assert gdal_ops.gdal_version() is None
+    with pytest.raises(gdal_ops.GdalError, match="not usable"):
+        gdal_ops.require_gdal()
+    ok = subprocess.CompletedProcess([], 0, stdout="GDAL 3.11.4, released 2025/09/04\n", stderr="")
+    monkeypatch.setattr(gdal_ops.subprocess, "run", lambda *_a, **_k: ok)
+    assert gdal_ops.gdal_version() == "GDAL 3.11.4, released 2025/09/04"
+
+
+def test_the_dem_fill_reaches_gdalwarp_exactly(tmp_path: Path) -> None:
+    def init_dest(fill: float) -> float:
+        argv = gdal_ops.dem_clip_argv(["a.tif"], tmp_path / "out.tif", (0.0, 0.0, 1.0, 1.0), (0.5, 0.5), fill=fill)
+        return float(argv[argv.index("-wo") + 1].removeprefix("INIT_DEST="))
+
+    for fill in (0.0, -9999.0, 1234567.0, -3.4028234663852886e38):
+        assert init_dest(fill) == fill

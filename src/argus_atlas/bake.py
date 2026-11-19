@@ -188,11 +188,12 @@ def run_bake(
                     lap("blend")
                 emit("georeference", f"cropping the {sidecar.chunk.margin} px margin off chunk {sidecar.chunk.tile}")
                 image, command = crop_chunk(job_dir, sidecar)
-            except AtlasError as exc:
+            except Exception as exc:
                 # The canvas passed its gate but the tile did not: say so in job.json, not only in the stream.
                 lap("crop")
                 sidecar.timings = timings
-                sidecar.bake = sidecar.bake.model_copy(update={"error": f"crop failed: {exc}"})
+                detail = str(exc) if isinstance(exc, AtlasError) else f"{type(exc).__name__}: {exc}"
+                sidecar.bake = sidecar.bake.model_copy(update={"error": f"crop failed: {detail}"})
                 save_sidecar(job_dir, sidecar)
                 raise
             sidecar.chunk = sidecar.chunk.model_copy(update={"image": image})
@@ -206,6 +207,8 @@ def run_bake(
     except Exception as exc:
         if painted and not recorded:
             _invalidate(job_dir, sidecar, timings)
+        if not painted:
+            (job_dir / FANTASY_PART).unlink(missing_ok=True)  # a half-painted canvas is nobody's
         message = str(exc) if isinstance(exc, AtlasError) else f"{type(exc).__name__}: {exc}"
         emit("error", message)
         logger.warning("bake.failed", job_id=job_id, error=message)

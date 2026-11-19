@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import secrets
 import shutil
-import tempfile
 import time
 from pathlib import Path
 
@@ -98,7 +97,9 @@ def copy_job(src: Path, dst: Path) -> JobSidecar:
         raise AtlasError(f"{dst} already exists — pick a new name, or bake that job directly")
     dst.parent.mkdir(parents=True, exist_ok=True)
     # Copy into a hidden sibling and rename it into place, so a half-finished copy never looks like a job.
-    staging = Path(tempfile.mkdtemp(prefix=f".{dst.name}.", suffix=".part", dir=dst.parent))
+    # mkdir, not mkdtemp: mkdtemp makes it 0700, and the renamed job must keep the umask's mode.
+    staging = dst.parent / f".{dst.name}.{secrets.token_hex(6)}.part"
+    staging.mkdir()
     try:
         for source in src.iterdir():
             if source.is_file() and source.name != SIDECAR_NAME and not source.name.startswith(BAKE_OUTPUT_PREFIX):

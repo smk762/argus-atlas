@@ -662,8 +662,8 @@ def run_chunk(
     try:
         emit("tiles", f"cutting zoom {sidecar.zoom_range[0]}-{sidecar.zoom_range[1]} from {CHUNK_TIF}")
         record_tiles = tile_job(out_dir, sidecar)
-    except AtlasError as exc:
-        emit("error", str(exc))
+    except Exception as exc:  # every failure ends the stream with an error frame
+        emit("error", str(exc) if isinstance(exc, AtlasError) else f"{type(exc).__name__}: {exc}")
         raise
     emit("done", f"{record_tiles.n_tiles} tiles, zoom {record_tiles.min_zoom}-{record_tiles.max_zoom}")
     return load_sidecar(out_dir)

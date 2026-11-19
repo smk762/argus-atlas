@@ -83,6 +83,7 @@ def test_copy_job_bakes_a_variant(job: tuple[Path, JobSidecar], models_dir: Path
     variant = copy_job(job_dir, tmp_path / "aoi-1-seed9")
     assert variant.job_id == "aoi-1-seed9" and variant.bake is None
     assert (tmp_path / "aoi-1-seed9" / "hillshade.png").is_file()
+    assert (tmp_path / "aoi-1-seed9").stat().st_mode & 0o777 == job_dir.stat().st_mode & 0o777, "not mkdtemp's 0700"
     baked = run_bake(
         tmp_path / "aoi-1-seed9", PARAMS.model_copy(update={"seed": 9}), FakeBackend(), models_root=models_dir
     )
@@ -164,3 +165,21 @@ def test_copy_job_refuses_an_existing_job_or_itself(
     (tmp_path / "empty").mkdir()
     assert copy_job(job_dir, tmp_path / "empty").job_id == "empty"
     assert not list(tmp_path.glob(".*.part"))
+
+
+def test_model_resolver_follows_a_symlink_the_operator_placed_under_the_root(tmp_path: Path) -> None:
+    from argus_atlas.backends.base import make_dir_resolver
+
+    store = tmp_path / "fast"
+    store.mkdir()
+    (store / "juggernaut.safetensors").write_bytes(b"weights")
+    root = tmp_path / "models"
+    (root / "checkpoints").mkdir(parents=True)
+    (root / "checkpoints" / "juggernaut.safetensors").symlink_to(store / "juggernaut.safetensors")
+    (root / "loras").symlink_to(store, target_is_directory=True)  # a split model tree
+    resolve = make_dir_resolver(root)
+    assert resolve("juggernaut.safetensors") == root / "checkpoints" / "juggernaut.safetensors"
+    assert resolve("loras/juggernaut.safetensors") == root / "loras" / "juggernaut.safetensors"
+    for escape in ("../fast/juggernaut.safetensors", str(store / "juggernaut.safetensors")):
+        with pytest.raises(FileNotFoundError):
+            resolve(escape)

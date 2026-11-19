@@ -219,7 +219,9 @@ def download(url: str, dest: Path, token: str | None, expected_sha: str | None, 
         with resp:
             if "text/html" in resp.headers.get("Content-Type", ""):
                 raise SystemExit(
-                    f"{resp.geturl()}: got an HTML page instead of a file — the model probably needs a token"
+                    # the URL without its query: that is where the token travels
+                    f"{resp.geturl().split('?', 1)[0]}: got an HTML page instead of a file"
+                    " — the model probably needs a token"
                 )
             if done and resp.status != 206:  # server ignored the Range: start over
                 print("    server does not resume; restarting from 0", file=sys.stderr)

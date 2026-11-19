@@ -10,6 +10,7 @@ interface is a :class:`~typing.Protocol` so another engine is a config change.
 from __future__ import annotations
 
 import glob
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -82,11 +83,10 @@ def make_dir_resolver(root: Path) -> ModelResolver:
     root = root.expanduser()
 
     def inside(candidate: Path) -> bool:
-        try:
-            candidate.resolve().relative_to(root.resolve())
-        except ValueError:
-            return False
-        return True
+        # Lexical, not resolved: the name can't climb out (no absolute path, no ``..``), and a
+        # symlink the operator put under the root (a split model tree) is theirs to follow.
+        top = os.path.abspath(root)
+        return os.path.commonpath([top, os.path.abspath(candidate)]) == top
 
     def resolve(name: str) -> Path:
         rel = Path(name)

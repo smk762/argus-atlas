@@ -13,9 +13,12 @@ PMTiles archive:
   (skipped sea) stay transparent.
 * **Labels**: every chunk's ``labels.geojson`` merged into one, a name at the same
   point kept once.
+* **Attribution**: every chunk's sources (DEM, layers, labels; see
+  :mod:`argus_atlas.attribution`) merged, written as the archive's ``attribution``
+  metadata, into the manifest, and (for the labels' own sources) into the labels file.
 * **Manifest** (``mosaic.json``, or ``<stem>.json`` beside a ``.pmtiles``): the zoom
-  range, bounds, tile count, every source chunk's job id, tile and archive SHA256,
-  and the GDAL argv.
+  range, bounds, tile count, attribution and sources, every source chunk's job id,
+  tile and archive SHA256, and the GDAL argv.
 """
 
 from __future__ import annotations
@@ -29,13 +32,14 @@ from pathlib import Path
 import structlog
 
 from argus_atlas import gdal_ops
+from argus_atlas.attribution import attribution_text, job_sources, merge_sources, unattributed
 from argus_atlas.hashing import sha256_file
 from argus_atlas.jobs import is_safe_id, load_sidecar
 from argus_atlas.labels import LABELS_NAME
 from argus_atlas.mercator import mercator_to_bbox
 from argus_atlas.models import AtlasError, Grid, JobSidecar, relief_key
 from argus_atlas.provenance import generator
-from argus_atlas.tiles import CHUNK_SLIVER_PX, TilesError, collect_xyz, pack_pmtiles
+from argus_atlas.tiles import CHUNK_SLIVER_PX, TilesError, collect_xyz, pack_pmtiles, source_metadata
 
 logger = structlog.get_logger()
 
@@ -108,7 +112,8 @@ def merge_archives(chunks: list[tuple[Path, JobSidecar]]) -> dict[TileKey, tuple
     """All chunk tiles as ``{(z, x, y): (png, job_id)}``; MosaicError where two archives disagree."""
     merged: dict[TileKey, tuple[bytes, str]] = {}
     for job_dir, sidecar in chunks:
-        assert sidecar.tiles is not None
+        if sidecar.tiles is None:
+            raise MosaicError(f"job {sidecar.job_id} has no tile archive")
         for key, data in read_archive(job_dir / sidecar.tiles.archive.path).items():
             held = merged.get(key)
             if held is not None and held[0] != data:
@@ -121,6 +126,8 @@ def merge_archives(chunks: list[tuple[Path, JobSidecar]]) -> dict[TileKey, tuple
 def union_grid(chunks: list[tuple[Path, JobSidecar]]) -> Grid:
     """A grid over every chunk's tile at the finest chunk resolution: the mosaic's bounds."""
     inners = [s.chunk.inner for _, s in chunks if s.chunk is not None]
+    if not inners:
+        raise MosaicError("no chunk jobs to mosaic")
     xmin, ymin = min(g.ulx for g in inners), min(g.lry for g in inners)
     xmax, ymax = max(g.lrx for g in inners), max(g.uly for g in inners)
     res = min(g.resolution for g in inners)
@@ -160,8 +167,13 @@ def merge_labels(chunks: list[tuple[Path, JobSidecar]]) -> dict:
         except (OSError, ValueError) as exc:
             raise MosaicError(f"{path} is not readable GeoJSON: {exc}") from exc
         for feature in collection.get("features") or []:
-            coords = (feature.get("geometry") or {}).get("coordinates") or []
-            if len(coords) < 2:
+            geometry = feature.get("geometry") or {}
+            coords = geometry.get("coordinates") or []
+            if (
+                geometry.get("type") != "Point"
+                or len(coords) < 2
+                or not all(isinstance(c, (int, float)) and not isinstance(c, bool) for c in coords[:2])
+            ):
                 continue  # labels are points; anything else is not ours to place
             lon, lat = coords[:2]
             key = (str((feature.get("properties") or {}).get("name")), round(lon, 6), round(lat, 6))
@@ -169,6 +181,18 @@ def merge_labels(chunks: list[tuple[Path, JobSidecar]]) -> dict:
                 seen.add(key)
                 features.append(feature)
     return {"type": "FeatureCollection", "features": features}
+
+
+def _straddled(chunks: list[tuple[Path, JobSidecar]], zmin: int, zmax: int) -> set[TileKey]:
+    """The tiles of zoom *zmin*..*zmax* that some chunk starting at a finer zoom lies under."""
+    shared: set[TileKey] = set()
+    for _, s in chunks:
+        if s.chunk is None or s.tiles is None:
+            continue
+        cz, cx, cy = s.chunk.z, s.chunk.x, s.chunk.y
+        for z in range(zmin, min(zmax, s.tiles.min_zoom - 1, cz) + 1):
+            shared.add((z, cx >> (cz - z), cy >> (cz - z)))
+    return shared
 
 
 def _outputs(out: Path) -> tuple[bool, Path, Path]:
@@ -208,6 +232,13 @@ def mosaic(style_dir: Path, out: Path, *, overview_min: int = DEFAULT_OVERVIEW_M
     if not as_pmtiles:
         _check_dir(out)  # refuse before the tiling, not after it
     labels = merge_labels(chunks)  # a bad labels file fails here, before any output is touched
+    sources = merge_sources(src for _, s in chunks for src in job_sources(s))
+    raster = merge_sources(src for _, s in chunks for src in job_sources(s, labels=False))  # the archive's pixels
+    for missing in unattributed(sources):
+        logger.warning("mosaic.unattributed_source", source=missing)
+    labels_credit = attribution_text(s for s in sources if "labels" in s.used_for)
+    if labels_credit and labels["features"]:
+        labels["attribution"] = labels_credit  # a GeoJSON foreign member: the file travels on its own
     gdal_ops.require_gdal()
     merged = merge_archives(chunks)
     grid = union_grid(chunks)
@@ -228,9 +259,16 @@ def mosaic(style_dir: Path, out: Path, *, overview_min: int = DEFAULT_OVERVIEW_M
         if overview_min <= overview_max:
             crops = [d / s.chunk.image.path for d, s in chunks if s.chunk and s.chunk.image]
             overviews, commands = build_overviews(crops, grid, overview_min, overview_max, work)
-            tiles += [t for t in overviews if t[:3] not in merged]  # a chunk's own tile wins
+            # A chunk's own tile wins, except where a chunk that starts finer also lies under it:
+            # the chunk tile holds only its own pixels there, the overview has both.
+            straddled = _straddled(chunks, overview_min, overview_max) & {t[:3] for t in overviews}
+            tiles = [t for t in tiles if t[:3] not in straddled]
+            tiles += [t for t in overviews if t[:3] not in merged or t[:3] in straddled]
         zooms = sorted({t[0] for t in tiles})
-        metadata = {"argus_mosaic": json.dumps({"style_dir": style_dir.name, "chunks": len(chunks)})}
+        metadata = {
+            "argus_mosaic": json.dumps({"style_dir": style_dir.name, "chunks": len(chunks)}),
+            **source_metadata(raster),
+        }
         if as_pmtiles:
             pack_pmtiles(tiles, out, grid, name=name or style_dir.name, extra_metadata=metadata)
         else:
@@ -256,6 +294,8 @@ def mosaic(style_dir: Path, out: Path, *, overview_min: int = DEFAULT_OVERVIEW_M
         "max_zoom": zooms[-1],
         "chunk_min_zoom": chunk_min,
         "n_tiles": len(tiles),
+        "attribution": attribution_text(sources) or None,
+        "sources": [src.model_dump() for src in sources],
         "chunks": [
             {
                 "job_id": s.job_id,

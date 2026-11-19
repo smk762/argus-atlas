@@ -25,7 +25,7 @@ from argus_atlas.chunks import (
 )
 from argus_atlas.georef import AlignmentError
 from argus_atlas.hashing import sha256_file
-from argus_atlas.jobs import copy_job, load_sidecar
+from argus_atlas.jobs import copy_job, load_sidecar, save_sidecar
 from argus_atlas.mercator import mercator_to_bbox, resolution_at_zoom, tile_bounds
 from argus_atlas.metadata import read_png_payload
 from argus_atlas.models import AtlasError, BakeParams, ChunkRecord, Recipe
@@ -423,3 +423,91 @@ def test_seams_work_from_a_read_only_working_directory(
         assert b.chunk is not None and b.chunk.blend is not None
     finally:
         locked.chmod(0o755)
+
+
+@requires_gdal
+def test_a_rebake_crashing_outside_atlas_keeps_the_published_chunk(dem: Path, tmp_path: Path, models_dir: Path) -> None:
+    a = _chunk(dem, tmp_path, A, models_dir)
+
+    class Oom(FakeBackend):
+        def generate(self, request, out_png, progress=None):  # noqa: ANN001, ANN202
+            raise RuntimeError("CUDA out of memory")
+
+    with pytest.raises(RuntimeError, match="CUDA"):
+        run_chunk(dem, A, RECIPE, tmp_path / a.job_id, backend=Oom(), models_root=models_dir, size=SIZE, margin=MARGIN)
+    kept = load_sidecar(tmp_path / a.job_id)
+    assert kept.status == "tiled" and kept.chunk is not None and a.chunk is not None
+    assert kept.chunk.image == a.chunk.image
+
+
+@requires_gdal
+def test_seams_rerun_drops_footprints_of_gone_neighbours(dem: Path, tmp_path: Path, models_dir: Path) -> None:
+    import shutil
+
+    a = _chunk(dem, tmp_path, A, models_dir)
+    b_dir = tmp_path / "antique-14-8651-5890"
+    run_chunk(dem, B, RECIPE, b_dir, size=SIZE, margin=MARGIN, controls_only=True)
+    assert _stats(b_dir / "seam_mask.png")[0]["minimum"] == 0
+    shutil.rmtree(tmp_path / a.job_id)
+    b = run_chunk(dem, B, RECIPE, b_dir, size=SIZE, margin=MARGIN, controls_only=True)
+    assert b.chunk is not None and b.chunk.neighbours == []
+    assert _stats(b_dir / "seam_mask.png")[0]["minimum"] == 255
+
+
+def _hand_written_chunk(root: Path, tile: str) -> Path:
+    """A published chunk of ``antique`` written by hand (no GDAL): job.json plus a crop with its digest."""
+    from argus_atlas.models import BakeRecord, FileRef, ModelRef
+    from tests.test_server import _seed_job
+
+    z, x, y = parse_tile(tile)
+    sidecar = _seed_job(root, chunk_job_id("antique", z, x, y))
+    job_dir = root / sidecar.job_id
+    (job_dir / CHUNK_TIF).write_bytes(b"crop of " + tile.encode())
+    crop = FileRef(path=CHUNK_TIF, sha256=sha256_file(job_dir / CHUNK_TIF))
+    _, inner = chunk_grids(z, x, y, size=SIZE, margin=MARGIN)
+    sidecar.chunk = ChunkRecord(z=z, x=x, y=y, size=SIZE, margin=MARGIN, inner=inner, image=crop)
+    sidecar.recipe = RECIPE
+    sidecar.bake = BakeRecord(
+        params=BakeParams(checkpoint="sd_xl_base_1.0.safetensors", seed=7, recipe="antique"),
+        backend="fake",
+        engine_version="0",
+        checkpoint=ModelRef(name="sd_xl_base_1.0.safetensors", sha256="b" * 64),
+        image=FileRef(path="fantasy.png", sha256="c" * 64),
+        aligned=True,
+        completed_at="2026-10-17T00:00:00+00:00",
+    )
+    save_sidecar(job_dir, sidecar)
+    return job_dir
+
+
+def test_a_crop_that_cannot_be_read_is_not_a_published_chunk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_atlas import chunks as chunks_mod
+
+    job_dir = _hand_written_chunk(tmp_path, A)
+    assert chunks_mod.published_chunk(job_dir) is not None
+
+    def gone(path: Path) -> str:  # deleted or replaced between the listing and the read
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(chunks_mod, "sha256_file", gone)
+    assert chunks_mod.published_chunk(job_dir) is None
+
+
+def test_a_neighbours_crop_must_sit_in_its_job_dir(tmp_path: Path) -> None:
+    root = tmp_path / "style"
+    job_dir = _hand_written_chunk(root, A)
+    z, x, y = parse_tile(B)
+    _, inner = chunk_grids(z, x, y, size=SIZE, margin=MARGIN)
+    probe = ChunkRecord(z=z, x=x, y=y, size=SIZE, margin=MARGIN, inner=inner)
+    assert [n.tile for n in find_neighbours(root, "antique", probe)] == [A]
+
+    # A job.json naming a file outside its job, with that file's own digest: the digest proves nothing.
+    outside = tmp_path / "elsewhere.tif"
+    outside.write_bytes((job_dir / CHUNK_TIF).read_bytes())
+    job = job_dir / "job.json"
+    for path in (str(outside), "../../elsewhere.tif"):
+        data = json.loads(job.read_text())
+        data["chunk"]["image"]["path"] = path
+        job.write_text(json.dumps(data))
+        with pytest.raises(AtlasError, match="outside the job directory"):
+            find_neighbours(root, "antique", probe)

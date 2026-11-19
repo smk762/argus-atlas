@@ -13,6 +13,7 @@ import os
 import secrets
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 import structlog
 
@@ -47,7 +48,7 @@ def _cli(verbose: bool = Option(False, "--verbose", "-v", help="Show info/debug 
     structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(level))
 
 
-def _fail(message: str, code: int = 1) -> None:
+def _fail(message: str, code: int = 1) -> NoReturn:
     typer.echo(message, err=True)
     raise typer.Exit(code)
 
@@ -418,6 +419,7 @@ def tiles(
         return
     if sidecar.bake is None or not sidecar.bake.aligned:
         _fail(f"{sidecar.job_id} has no aligned GeoTIFF — bake it first (or its alignment gate failed)", EXIT_INPUT)
+        return
     try:
         record = tile_job(job_dir, sidecar, out=out, min_zoom=min_zoom, max_zoom=max_zoom)
     except AlignmentError as exc:
@@ -432,6 +434,9 @@ def tiles(
     typer.echo(
         f"{sidecar.job_id}: {record.n_tiles} tiles, zoom {record.min_zoom}-{record.max_zoom} -> {out or job_dir / FANTASY_PMTILES}"
     )
+    from argus_atlas.attribution import job_sources
+
+    _credit(record.attribution, job_sources(sidecar, labels=False))
 
 
 @app.command()
@@ -485,7 +490,7 @@ def chunk(
         z, x, y = parse_tile(tile)
         validate_chunk(z, size, margin)
         validate_seams(size, margin, mask_feather=mask_feather, feather=feather)
-        loaded, recipe_path = load_recipe(recipe, recipes_root=config.recipes_dir())
+        loaded, recipe_path = load_recipe(recipe, recipes_root=config.recipes_dir(), allow_path=True)
         loaded = with_relief(loaded, _parse_z_factor(z_factor), vertical_exaggeration)
         workflow = None if controls_only else recipe_workflow(loaded, recipe_path)
         layers = _parse_layers(layer)
@@ -600,7 +605,7 @@ def chunks(
             if zoom is None:
                 raise AtlasError("--bbox needs --zoom")
             tiles = bbox_tiles(BBox.parse(bbox), zoom)
-        loaded, recipe_path = load_recipe(recipe, recipes_root=config.recipes_dir())
+        loaded, recipe_path = load_recipe(recipe, recipes_root=config.recipes_dir(), allow_path=True)
         loaded = with_relief(loaded, _parse_z_factor(z_factor), vertical_exaggeration)
         record = recipe_record(loaded)
         workflow = None if (plan_only or controls_only) else recipe_workflow(loaded, recipe_path)
@@ -722,6 +727,18 @@ def mosaic(
     )
     typer.echo(f"  labels    {manifest['labels']['count']} name(s) in {manifest['labels']['path']}")
     typer.echo(f"  bounds    {manifest['bounds']}")
+    from argus_atlas.models import SourceRecord
+
+    _credit(manifest["attribution"], [SourceRecord.model_validate(s) for s in manifest["sources"]])
+
+
+def _credit(attribution: str | None, sources: list) -> None:  # noqa: ANN001 - list[SourceRecord]
+    """Print the credit a published tile set must carry, and warn about sources atlas can't attribute."""
+    from argus_atlas.attribution import unattributed
+
+    typer.echo(f"  attribution: {attribution or 'none known'} (keep it with anything you publish)")
+    for name in unattributed(sources):
+        typer.echo(f"warning: no known attribution for {name}: credit it yourself where you publish", err=True)
 
 
 @app.command()
@@ -815,6 +832,10 @@ def inspect(
     if sidecar.tiles:
         t = sidecar.tiles
         typer.echo(f"  tiles:    {t.archive.path} — {t.n_tiles} tiles, zoom {t.min_zoom}-{t.max_zoom} ({t.packer})")
+    from argus_atlas.attribution import job_sources
+
+    for src in job_sources(sidecar):
+        typer.echo(f"  source:   {src.name} for {', '.join(src.used_for)}: {src.attribution or 'attribution unknown'}")
     if sidecar.timings:
         typer.echo("  timings:  " + ", ".join(f"{k} {v:.2f}s" for k, v in sidecar.timings.items()))
 

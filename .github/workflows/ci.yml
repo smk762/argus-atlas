@@ -51,6 +51,8 @@ jobs:
         python-version: ["3.11", "3.12"]
     env:
       ATLAS_TEST_REQUIRE_GDAL: "1"
+      # Private names the docs opsec gate refuses (tests/test_rules.py), kept out of git. Empty is fine.
+      OPSEC_DENYLIST: ${{ secrets.OPSEC_DENYLIST }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -82,3 +84,23 @@ jobs:
           name: dist
           path: dist/
           retention-days: 14
+
+  main-not-ahead:
+    # main must never hold anything dev lacks. A release PR's merge commit has the tree of the dev commit it
+    # merged, so the diff from that merge base to main is empty even after dev moves on; anything else is a
+    # commit that reached main without going through dev.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: main has nothing dev lacks
+        run: |
+          git fetch --no-tags origin dev
+          git diff --stat --exit-code "$(git merge-base HEAD origin/dev)" HEAD
+
+  suite-rules:
+    # argus-ci suite rules: lint rules that each eliminate a finding class. New violations fail;
+    # existing ones are in .suite-rules-baseline.json, which may only shrink.
+    uses: smk762/argus-ci/.github/workflows/suite-rules.yml@v1

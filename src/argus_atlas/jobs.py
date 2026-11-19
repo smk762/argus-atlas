@@ -7,15 +7,14 @@ artifact by ``(job_id, kind)`` and never resolves a client-supplied path.
 
 from __future__ import annotations
 
-import re
 import secrets
 import shutil
 import time
 from pathlib import Path
 
-from argus_atlas.models import COMPOSITE_KIND, SIDECAR_NAME, AtlasError, JobDigest, JobSidecar
+from argus_cortex.fs import PathRefused, safe_name
 
-_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+from argus_atlas.models import COMPOSITE_KIND, SIDECAR_NAME, AtlasError, JobDigest, JobSidecar
 
 # Fixed preview names; any other kind is looked up in the job's controls.
 PREVIEW_FILES: dict[str, str] = {"fantasy": "fantasy.png"}
@@ -26,7 +25,13 @@ CONTROL_STAGES: frozenset[str] = frozenset({"controls", "seams"})
 
 
 def is_safe_id(value: str) -> bool:
-    return bool(value) and value not in {".", ".."} and _SAFE_ID.match(value) is not None
+    """One path segment: starts alphanumeric, then letters, digits, ``.``, ``_`` or ``-`` (argus-cortex's
+    :func:`~argus_cortex.fs.safe_name`, which matches the whole string, so a trailing newline is refused)."""
+    try:
+        safe_name(value)
+    except PathRefused:
+        return False
+    return True
 
 
 def require_safe_id(value: str, label: str = "job id") -> str:
@@ -85,11 +90,33 @@ def copy_job(src: Path, dst: Path) -> JobSidecar:
     bake/tiles record."""
     sidecar = load_sidecar(src)
     job_id = require_safe_id(dst.name)
-    dst.mkdir(parents=True, exist_ok=True)
-    for source in src.iterdir():
-        if source.is_file() and source.name != SIDECAR_NAME and not source.name.startswith(BAKE_OUTPUT_PREFIX):
-            shutil.copy2(source, dst / source.name)
-    fresh = sidecar.model_copy(
+    if dst.resolve() == src.resolve():
+        raise AtlasError(f"cannot copy job {src.name} onto itself")
+    if dst.exists() and (not dst.is_dir() or any(dst.iterdir())):
+        # Never merge into another job: its bake/tiles record would be dropped while its outputs stay.
+        raise AtlasError(f"{dst} already exists — pick a new name, or bake that job directly")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    # Copy into a hidden sibling and rename it into place, so a half-finished copy never looks like a job.
+    # mkdir, not mkdtemp: mkdtemp makes it 0700, and the renamed job must keep the umask's mode.
+    staging = dst.parent / f".{dst.name}.{secrets.token_hex(6)}.part"
+    staging.mkdir()
+    try:
+        for source in src.iterdir():
+            if source.is_file() and source.name != SIDECAR_NAME and not source.name.startswith(BAKE_OUTPUT_PREFIX):
+                shutil.copy2(source, staging / source.name)
+        fresh = _fresh_copy(sidecar, job_id)
+        save_sidecar(staging, fresh)
+        if dst.exists():
+            dst.rmdir()  # empty (checked above); rename needs it gone
+        staging.rename(dst)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return fresh
+
+
+def _fresh_copy(sidecar: JobSidecar, job_id: str) -> JobSidecar:
+    return sidecar.model_copy(
         update={
             "job_id": job_id,
             "bake": None,
@@ -98,8 +125,6 @@ def copy_job(src: Path, dst: Path) -> JobSidecar:
             "timings": {k: v for k, v in sidecar.timings.items() if k in CONTROL_STAGES},
         }
     )
-    save_sidecar(dst, fresh)
-    return fresh
 
 
 class JobStore:

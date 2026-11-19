@@ -34,8 +34,13 @@ TEST_LONG_SIDE = 256
 
 @pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin every ATLAS_* knob off so an operator shell can't flip the defaults under test."""
+    """Pin every ATLAS_* knob off so an operator shell can't flip the defaults under test.
+
+    ARGUS_GPU_COORDINATOR too: a host set to ``broker`` would otherwise send the ComfyUI tests to iris.
+    """
     for name in (
+        "ARGUS_GPU_COORDINATOR",
+        "ATLAS_GPU_PRIORITY",
         "ATLAS_ALLOW_BAKE",
         "ATLAS_JOBS_DIR",
         "ATLAS_DEM_DIR",

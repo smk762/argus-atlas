@@ -19,7 +19,8 @@ COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /bin/
 WORKDIR /app
 
 # hatch-vcs derives the version from git history, so the build context must
-# include .git (keep it out of .dockerignore) and the image needs git.
+# include .git (keep it out of .dockerignore) and the image needs git. Nothing
+# tracked may be left out of the context either, or git calls the tree dirty.
 # urllib (OSM fetch, ComfyUI transport) trusts the system bundle. Ubuntu's
 # ca-certificates package lags, so distrust emSign ECC Root CA - G3 and the
 # Comodo AAA cross-sign root here. Unaffected emSign roots stay enabled,
@@ -42,8 +43,22 @@ COPY . .
 # gdal2tiles.py keeps using /usr/bin/python3 + the system osgeo bindings.
 ARG EXTRAS="server,cli,tiles"
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
-RUN uv sync --locked --no-editable --no-cache --python /usr/bin/python3 \
+#
+# The project itself is built and installed separately so that the version it
+# reports can come from the release tag: the release passes it (without the v)
+# as VERSION, and SETUPTOOLS_SCM_PRETEND_VERSION is set only while `uv build`
+# makes argus-atlas's wheel. hatch-vcs ignores the per-package
+# SETUPTOOLS_SCM_PRETEND_VERSION_FOR_ARGUS_ATLAS (it passes no dist name), and
+# the generic variable set around `uv sync` would also version any dependency
+# built from source. A local `docker build` leaves VERSION empty and git decides
+# (#50).
+RUN uv sync --locked --no-install-project --no-cache --python /usr/bin/python3 \
         $(echo "${EXTRAS}" | tr ',' '\n' | sed 's/^/--extra /')
+ARG VERSION=""
+RUN if [ -n "$VERSION" ]; then export SETUPTOOLS_SCM_PRETEND_VERSION="$VERSION"; fi \
+    && uv build --wheel --no-cache --python /usr/bin/python3 --out-dir /tmp/dist \
+    && uv pip install --python /opt/venv/bin/python --no-cache --no-deps /tmp/dist/argus_atlas-*.whl \
+    && rm -rf /tmp/dist
 # A uv venv has no pip of its own, so uv installs the pinned pip 26.2.2 wheel
 # (hash-checked) alongside certifi 2026.10.19+ — both dropped the emSign roots.
 # After the sync, which would remove anything the lock doesn't name.

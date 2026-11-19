@@ -83,6 +83,7 @@ def test_copy_job_bakes_a_variant(job: tuple[Path, JobSidecar], models_dir: Path
     variant = copy_job(job_dir, tmp_path / "aoi-1-seed9")
     assert variant.job_id == "aoi-1-seed9" and variant.bake is None
     assert (tmp_path / "aoi-1-seed9" / "hillshade.png").is_file()
+    assert (tmp_path / "aoi-1-seed9").stat().st_mode & 0o777 == job_dir.stat().st_mode & 0o777, "not mkdtemp's 0700"
     baked = run_bake(
         tmp_path / "aoi-1-seed9", PARAMS.model_copy(update={"seed": 9}), FakeBackend(), models_root=models_dir
     )
@@ -106,3 +107,79 @@ def test_bake_embeds_payload_in_png_and_geotiff(job: tuple[Path, JobSidecar], mo
     desc = info["metadata"][""]["TIFFTAG_IMAGEDESCRIPTION"]
     assert json.loads(desc)["job_id"] == sidecar.job_id
     assert info["metadata"][""]["TIFFTAG_SOFTWARE"] == "argus-atlas"
+
+
+def test_failed_generation_keeps_previous_bake_consistent(job: tuple[Path, JobSidecar], models_dir: Path) -> None:
+    """A backend that dies mid-paint never touches fantasy.png, so job.json still describes it."""
+    job_dir, _ = job
+    first = run_bake(job_dir, PARAMS, FakeBackend(), models_root=models_dir)
+
+    class Partial(FakeBackend):
+        def generate(self, request, out_png, progress=None):  # noqa: ANN001, ANN202
+            out_png.write_bytes(b"\x89PNG half a canvas")
+            raise BackendError("connection dropped")
+
+    with pytest.raises(BackendError):
+        run_bake(job_dir, PARAMS, Partial(), models_root=models_dir)
+    after = load_sidecar(job_dir)
+    assert after.bake == first.bake
+    assert sha256_file(job_dir / "fantasy.png") == after.bake.image.sha256
+
+
+def test_unexpected_failure_after_paint_invalidates_record(
+    job: tuple[Path, JobSidecar], models_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """fantasy.png replaced, then a non-gate failure: the old bake/tiles claims are dropped, not kept stale."""
+    job_dir, _ = job
+    run_bake(job_dir, PARAMS, FakeBackend(), models_root=models_dir)
+
+    def boom(*_a, **_k):  # noqa: ANN002, ANN003, ANN202
+        raise OSError("disk full")
+
+    monkeypatch.setattr("argus_atlas.bake.stamp", boom)
+    events: list[ProgressEvent] = []
+    with pytest.raises(OSError, match="disk full"):
+        run_bake(
+            job_dir,
+            PARAMS.model_copy(update={"seed": 8}),
+            FakeBackend(),
+            models_root=models_dir,
+            progress=events.append,
+        )
+    assert events[-1].type == "error" and "disk full" in events[-1].message
+    after = load_sidecar(job_dir)
+    assert after.bake is None and after.tiles is None
+
+
+def test_copy_job_refuses_an_existing_job_or_itself(
+    job: tuple[Path, JobSidecar], models_dir: Path, tmp_path: Path
+) -> None:
+    job_dir, _ = job
+    baked = copy_job(job_dir, tmp_path / "taken")
+    run_bake(tmp_path / "taken", PARAMS, FakeBackend(), models_root=models_dir)
+    with pytest.raises(AtlasError, match="already exists"):
+        copy_job(job_dir, tmp_path / "taken")
+    assert load_sidecar(tmp_path / "taken").bake is not None and baked.job_id == "taken"
+    with pytest.raises(AtlasError, match="onto itself"):
+        copy_job(job_dir, job_dir)
+    (tmp_path / "empty").mkdir()
+    assert copy_job(job_dir, tmp_path / "empty").job_id == "empty"
+    assert not list(tmp_path.glob(".*.part"))
+
+
+def test_model_resolver_follows_a_symlink_the_operator_placed_under_the_root(tmp_path: Path) -> None:
+    from argus_atlas.backends.base import make_dir_resolver
+
+    store = tmp_path / "fast"
+    store.mkdir()
+    (store / "juggernaut.safetensors").write_bytes(b"weights")
+    root = tmp_path / "models"
+    (root / "checkpoints").mkdir(parents=True)
+    (root / "checkpoints" / "juggernaut.safetensors").symlink_to(store / "juggernaut.safetensors")
+    (root / "loras").symlink_to(store, target_is_directory=True)  # a split model tree
+    resolve = make_dir_resolver(root)
+    assert resolve("juggernaut.safetensors") == root / "checkpoints" / "juggernaut.safetensors"
+    assert resolve("loras/juggernaut.safetensors") == root / "loras" / "juggernaut.safetensors"
+    for escape in ("../fast/juggernaut.safetensors", str(store / "juggernaut.safetensors")):
+        with pytest.raises(FileNotFoundError):
+            resolve(escape)

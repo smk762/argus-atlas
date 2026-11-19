@@ -27,6 +27,7 @@ network, the model, the GeoTIFF or the PMTiles.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -88,7 +89,7 @@ def _rank(props: dict, scheme: str, zoom: int) -> tuple[int, str] | None:
     if scheme == "naturalearth":
         try:
             rank = int(float(_field(props, "scalerank")))  # type: ignore[arg-type]
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):  # OverflowError: an infinite rank
             return None
         kind = str(_field(props, "featurecla") or "populated place").lower()
         return (rank, kind) if rank <= max_scalerank(zoom) else None
@@ -218,7 +219,7 @@ def _manifest_commands(out: Path) -> list[GdalCommand]:
     try:
         manifest = json.loads(manifest_path(out).read_text(encoding="utf-8"))
         return [GdalCommand.model_validate(c) for c in manifest.get("commands", [])]
-    except (OSError, ValueError, AttributeError):
+    except (OSError, ValueError, AttributeError, TypeError):  # TypeError: "commands" is not a list
         return []
 
 
@@ -249,9 +250,29 @@ def label_job(job_dir: Path, source: Path, *, zoom: int | None = None, layer: st
     grid = labelled_grid(sidecar)
     zoom = sidecar.native_zoom if zoom is None else zoom
     out = job_dir / LABELS_NAME
-    previous = _manifest_commands(out) if sidecar.labels else []  # replaced, not stacked, on a re-run
-    manifest = build_labels(source, mercator_to_bbox(*grid.bounds), zoom, out, layer=layer)
-    record = LabelsRecord(
+    if out.exists() and out.resolve() == source.expanduser().resolve():
+        raise AtlasError(f"{out} is the places file itself; write the labels somewhere else")
+    with tempfile.TemporaryDirectory(dir=job_dir, prefix=".labels-stage-") as stage:
+        # Built aside and moved in only once job.json is known to still describe this grid, so an
+        # aborted run never leaves labels.geojson/labels.json disagreeing with the record.
+        staged = Path(stage) / LABELS_NAME
+        manifest = build_labels(source, mercator_to_bbox(*grid.bounds), zoom, staged, layer=layer)
+        record = _labels_record(manifest, zoom)
+        # Re-read: a bake or tiles run may have rewritten job.json while ogr2ogr ran.
+        current = load_sidecar(job_dir)
+        if labelled_grid(current) != grid:
+            raise AtlasError(f"{job_dir.name}: the job's grid changed while labelling; run labels again")
+        previous = _manifest_commands(out) if current.labels else []  # replaced, not stacked, on a re-run
+        os.replace(staged, out)
+        os.replace(manifest_path(staged), manifest_path(out))
+    kept = [c for c in current.commands if c not in previous]
+    commands = [GdalCommand.model_validate(c) for c in manifest["commands"]]
+    save_sidecar(job_dir, current.model_copy(update={"labels": record, "commands": [*kept, *commands]}))
+    return record
+
+
+def _labels_record(manifest: dict, zoom: int) -> LabelsRecord:
+    return LabelsRecord(
         source=FileRef(path=manifest["source"]["path"], sha256=manifest["source"]["sha256"]),
         scheme=manifest["scheme"],
         zoom=zoom,
@@ -260,11 +281,3 @@ def label_job(job_dir: Path, source: Path, *, zoom: int | None = None, layer: st
         file=FileRef(path=LABELS_NAME, sha256=manifest["output"]["sha256"]),
         completed_at=manifest["created_at"],
     )
-    # Re-read: a bake or tiles run may have rewritten job.json while ogr2ogr ran.
-    current = load_sidecar(job_dir)
-    if labelled_grid(current) != grid:
-        raise AtlasError(f"{job_dir.name}: the job's grid changed while labelling; run labels again")
-    kept = [c for c in current.commands if c not in previous]
-    commands = [GdalCommand.model_validate(c) for c in manifest["commands"]]
-    save_sidecar(job_dir, current.model_copy(update={"labels": record, "commands": [*kept, *commands]}))
-    return record

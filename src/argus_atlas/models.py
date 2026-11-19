@@ -19,8 +19,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 # Sidecar schema version. Bump the minor for additive fields, the major for a
 # breaking change to what a reader must understand. 0.2 added chunk, recipe and timings; 0.3 labels;
-# 0.4 generator (the argus-atlas package version and git commit that wrote the job and the bake).
-ATLAS_VERSION = "0.4"
+# 0.4 generator (the argus-atlas package version and git commit that wrote the job and the bake);
+# 0.5 sources (what each input is and how it must be attributed) and the tiles' attribution.
+ATLAS_VERSION = "0.5"
 
 CRS = "EPSG:3857"
 EPSG_CODE = 3857
@@ -166,6 +167,12 @@ class Grid(BaseModel):
             raise ValueError(f"grid CRS must be {CRS}, got {value!r}")
         return CRS
 
+    @model_validator(mode="after")
+    def _pixels_are_square(self) -> Grid:
+        if not math.isclose(self.pixel_width, -self.pixel_height, rel_tol=1e-9):
+            raise ValueError(f"grid pixels must be square, got {self.pixel_width} x {-self.pixel_height} m")
+        return self
+
     @property
     def resolution(self) -> float:
         """Ground resolution in metres per pixel (pixels are square)."""
@@ -271,6 +278,22 @@ class BakeRecord(BaseModel):
     generator: GeneratorRecord | None = None
 
 
+class SourceRecord(BaseModel):
+    """One upstream dataset a job's pixels or labels came from, and how publishing them must credit it.
+
+    ``key`` names a known source (``copernicus-glo30``, ``openstreetmap``, ``naturalearth``) or is
+    ``unknown``: an operator's own file whose terms atlas cannot tell. An unknown source has no
+    ``attribution``; whoever publishes the tiles must add it (``tiles`` and ``mosaic`` warn).
+    """
+
+    key: str
+    name: str
+    attribution: str | None = None
+    license: str | None = None
+    url: str | None = None
+    used_for: list[str] = Field(default_factory=list)  # "dem", layer names, "labels"
+
+
 class TilesRecord(BaseModel):
     """The PMTiles archive cut from the aligned GeoTIFF."""
 
@@ -282,6 +305,8 @@ class TilesRecord(BaseModel):
     tiler: str
     packer: str
     completed_at: str
+    # The attribution written into the archive's metadata. None: tiles cut before 0.5.
+    attribution: str | None = None
 
     @model_validator(mode="after")
     def _zooms_ordered(self) -> TilesRecord:
@@ -475,6 +500,9 @@ class JobSidecar(BaseModel):
     relief: ReliefRecord | None = None
     # Wall-clock seconds per stage (controls, seams, verify, generate, georeference, crop, tiles).
     timings: dict[str, float] = Field(default_factory=dict)
+    # The DEM and layer datasets, as recorded when the controls were built. None: a job from before 0.5,
+    # whose sources are worked out from the recorded paths when it is tiled. Labels are added at tiling.
+    sources: list[SourceRecord] | None = None
 
     @property
     def status(self) -> JobStatus:

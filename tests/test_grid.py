@@ -64,3 +64,22 @@ def test_explicit_coarse_resolution_is_honoured() -> None:
     assert grid.long_side <= MAX_LONG_SIDE
     with pytest.raises(AtlasError, match="positive"):
         plan_grid(BBOX, resolution=0)
+
+
+def test_a_nan_resolution_or_an_empty_extent_is_an_atlas_error() -> None:
+    for bad in (float("nan"), float("inf"), 0.0, -1.0):
+        with pytest.raises(AtlasError, match="resolution must be positive"):
+            plan_grid(BBOX, resolution=bad)
+    flat = BBox.model_construct(west=10.0, south=45.0, east=10.0, north=45.0)  # past the model's own check
+    with pytest.raises(AtlasError, match="no extent"):
+        plan_grid(flat)
+
+
+def test_a_grid_with_non_square_pixels_is_refused() -> None:
+    from pydantic import ValidationError
+
+    from argus_atlas.models import Grid
+
+    assert Grid(width=64, height=64, ulx=0, uly=0, pixel_width=10.0, pixel_height=-10.0).resolution == 10.0
+    with pytest.raises(ValidationError, match="square"):
+        Grid(width=64, height=64, ulx=0, uly=0, pixel_width=10.0, pixel_height=-20.0)

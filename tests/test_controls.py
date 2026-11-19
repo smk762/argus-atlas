@@ -60,8 +60,10 @@ def test_controls_with_land_mask(dem: Path, land: Path, tmp_path: Path) -> None:
     info = gdal_ops.gdalinfo_json(job_dir / "land_mask.tif")
     assert info["size"] == [sidecar.grid.width, sidecar.grid.height]
     # Western half burnt (255), eastern half empty (0): both values present.
-    stats = gdal_ops.gdalinfo_json(job_dir / "land_mask.tif")
-    assert stats["bands"][0]["type"] == "Byte"
+    assert info["bands"][0]["type"] == "Byte"
+    counts = _value_counts(job_dir / "land_mask.tif", tmp_path)
+    assert set(counts) == {"0", "255"}, counts
+    assert 0.4 < counts["255"] / (counts["0"] + counts["255"]) < 0.6, counts
     assert any(c.tool == "gdal_rasterize" for c in sidecar.commands)
 
 
@@ -182,3 +184,11 @@ def test_resampling_is_a_spline_when_upsampling_hard(dem: Path, tmp_path: Path) 
     assert gdal_ops.choose_resampling(None, 1.1) == "bilinear"
     with pytest.raises(AtlasError, match="unknown resampling"):
         build_controls(dem, TEST_BBOX, tmp_path / "bad", long_side=TEST_LONG_SIDE, resampling="nearest-ish")
+
+
+@pytest.mark.parametrize("name", ["roads\n", "hillshade\n", "a" * 33, "roads/../x"])
+def test_layer_name_must_match_whole_string(name: str) -> None:
+    from argus_atlas.controls import validate_layer_name
+
+    with pytest.raises(AtlasError, match="bad layer name"):
+        validate_layer_name(name)

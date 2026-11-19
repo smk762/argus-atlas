@@ -35,7 +35,7 @@ def _checkout_commit() -> str | None:
     except (OSError, subprocess.SubprocessError):
         return None
     sha = out.stdout.strip()
-    return sha if _SHA.match(sha) else None
+    return sha if _SHA.fullmatch(sha) else None
 
 
 def _built_commit() -> str | None:
@@ -43,7 +43,7 @@ def _built_commit() -> str | None:
         from argus_atlas._build_info import COMMIT  # type: ignore[import-not-found]
     except ImportError:
         return None
-    return COMMIT if isinstance(COMMIT, str) and _SHA.match(COMMIT) else None
+    return COMMIT if isinstance(COMMIT, str) and _SHA.fullmatch(COMMIT) else None
 
 
 def commit_from_version(version: str) -> str | None:

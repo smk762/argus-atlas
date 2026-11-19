@@ -9,7 +9,7 @@ from typer.testing import CliRunner
 from argus_atlas import labels
 from argus_atlas.cli import app
 from argus_atlas.hashing import sha256_file
-from argus_atlas.jobs import JobStore, copy_job, load_sidecar
+from argus_atlas.jobs import JobStore, copy_job, load_sidecar, save_sidecar
 from argus_atlas.models import AtlasError, BBox, JobSidecar
 from argus_atlas.osm import build_query, place_classes
 from tests.conftest import TEST_BBOX, requires_gdal
@@ -44,6 +44,19 @@ def test_cutoffs_by_zoom() -> None:
     assert place_classes(4) == ["city"]
     assert place_classes(11) == ["city", "town", "village"]
     assert "hamlet" in place_classes(13) and "locality" not in place_classes(14)
+
+
+def test_an_infinite_scalerank_drops_the_point() -> None:
+    for bad in ("inf", "-Infinity", "1e999", float("inf"), "nan", None, "x"):
+        assert labels._rank({"scalerank": bad}, "naturalearth", 8) is None
+    assert labels._rank({"scalerank": "3.0"}, "naturalearth", 8) == (3, "populated place")
+
+
+def test_a_manifest_with_malformed_commands_records_none(tmp_path: Path) -> None:
+    out = tmp_path / "labels.geojson"
+    for bad in ('{"commands": null}', '{"commands": 3}', '{"commands": true}', "[]", "{not json", '{"commands": [1]}'):
+        labels.manifest_path(out).write_text(bad, encoding="utf-8")
+        assert labels._manifest_commands(out) == []
 
 
 def test_rank_features_osm_scheme_and_drops() -> None:
@@ -226,3 +239,26 @@ def test_controls_rerun_on_the_same_grid_keeps_labels(dem: Path, ne_places: Path
 
     moved = BBox(west=TEST_BBOX.west, south=TEST_BBOX.south, east=TEST_BBOX.east - 0.01, north=TEST_BBOX.north)
     assert build_controls(dem, moved, job_dir, long_side=TEST_LONG_SIDE).labels is None  # another grid drops them
+
+
+@requires_gdal
+def test_a_grid_change_mid_labelling_leaves_the_files_alone(
+    job: tuple[Path, JobSidecar], ne_places: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job_dir, sidecar = job
+    labels.label_job(job_dir, ne_places, zoom=6)
+    before = (job_dir / labels.LABELS_NAME).read_bytes(), (job_dir / "labels.json").read_bytes()
+    real = labels.build_labels
+
+    def and_move_the_grid(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        manifest = real(*args, **kwargs)
+        moved = load_sidecar(job_dir)
+        grid = moved.grid.model_copy(update={"ulx": moved.grid.ulx + 70.0})
+        save_sidecar(job_dir, moved.model_copy(update={"grid": grid}))
+        return manifest
+
+    monkeypatch.setattr(labels, "build_labels", and_move_the_grid)
+    with pytest.raises(AtlasError, match="grid changed"):
+        labels.label_job(job_dir, ne_places, zoom=5)
+    assert ((job_dir / labels.LABELS_NAME).read_bytes(), (job_dir / "labels.json").read_bytes()) == before
+    assert not list(job_dir.glob(".labels-stage-*"))

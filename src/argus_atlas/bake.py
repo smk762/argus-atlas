@@ -12,6 +12,7 @@ here: this module assumes the operator already opted in.
 
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -19,7 +20,7 @@ from pathlib import Path
 
 import structlog
 
-from argus_atlas.backends.base import BackendError, BakeBackend, BakeRequest, hash_model, make_dir_resolver
+from argus_atlas.backends.base import BakeBackend, BakeRequest, hash_model, make_dir_resolver
 from argus_atlas.georef import FANTASY_PNG, FANTASY_TIF, AlignmentError, stamp
 from argus_atlas.hashing import sha256_file
 from argus_atlas.jobs import CONTROL_STAGES, load_sidecar, save_sidecar
@@ -30,6 +31,11 @@ from argus_atlas.provenance import generator
 logger = structlog.get_logger()
 
 ProgressSink = Callable[[ProgressEvent], None]
+
+# The backend paints here; only a PNG that generated and took its metadata is
+# moved onto ``fantasy.png``, so a failed bake never leaves job.json describing
+# a half-written or foreign canvas.
+FANTASY_PART = "fantasy.part.png"
 
 
 def _now() -> str:
@@ -83,6 +89,7 @@ def run_bake(
         if progress is not None:
             progress(ProgressEvent(job_id=job_id, type=kind, message=message))  # type: ignore[arg-type]
 
+    painted = recorded = False
     try:
         emit("controls", f"verifying {len(sidecar.controls)} control(s) against job.json")
         controls = verify_controls(job_dir, sidecar)
@@ -94,9 +101,11 @@ def run_bake(
 
         emit("generate", f"painting {sidecar.grid.width}x{sidecar.grid.height} through {backend.name}")
         png = job_dir / FANTASY_PNG
+        part = job_dir / FANTASY_PART
+        part.unlink(missing_ok=True)
         output = backend.generate(
             BakeRequest(job_id=job_id, grid=sidecar.grid, params=params, controls=controls),
-            png,
+            part,
             progress=lambda msg: emit("generate", msg),
         )
         payload = bake_payload(
@@ -108,8 +117,11 @@ def run_bake(
             engine_version=output.engine_version,
             workflow_sha256=output.workflow_sha256,
         )
-        embed_png(png, payload)  # metadata only; pixels untouched, the gate sees the same image
-        image_ref = FileRef(path=png.name, sha256=sha256_file(png))
+        embed_png(part, payload)  # metadata only; pixels untouched, the gate sees the same image
+        image_sha = sha256_file(part)
+        os.replace(part, png)
+        painted = True  # from here job.json's old bake no longer describes fantasy.png
+        image_ref = FileRef(path=png.name, sha256=image_sha)
         lap("generate")
 
         emit("georeference", "stamping the sidecar geotransform and checking alignment")
@@ -137,6 +149,7 @@ def run_bake(
             )
             sidecar.tiles = None
             save_sidecar(job_dir, sidecar)
+            recorded = True
             raise
 
         sidecar.bake = BakeRecord(
@@ -158,6 +171,7 @@ def run_bake(
         if sidecar.chunk is not None:
             sidecar.chunk = sidecar.chunk.model_copy(update={"image": None, "blend": None})
         save_sidecar(job_dir, sidecar)
+        recorded = True
         if sidecar.chunk is not None:
             from argus_atlas.chunks import blend_chunk, crop_chunk
 
@@ -174,11 +188,12 @@ def run_bake(
                     lap("blend")
                 emit("georeference", f"cropping the {sidecar.chunk.margin} px margin off chunk {sidecar.chunk.tile}")
                 image, command = crop_chunk(job_dir, sidecar)
-            except AtlasError as exc:
+            except Exception as exc:
                 # The canvas passed its gate but the tile did not: say so in job.json, not only in the stream.
                 lap("crop")
                 sidecar.timings = timings
-                sidecar.bake = sidecar.bake.model_copy(update={"error": f"crop failed: {exc}"})
+                detail = str(exc) if isinstance(exc, AtlasError) else f"{type(exc).__name__}: {exc}"
+                sidecar.bake = sidecar.bake.model_copy(update={"error": f"crop failed: {detail}"})
                 save_sidecar(job_dir, sidecar)
                 raise
             sidecar.chunk = sidecar.chunk.model_copy(update={"image": image})
@@ -189,7 +204,27 @@ def run_bake(
         emit("done", f"{tif.name} aligned to the canvas; run tiles to cut the archive")
         logger.info("bake.done", job_id=job_id)
         return sidecar
-    except (AtlasError, BackendError) as exc:
-        emit("error", str(exc))
-        logger.warning("bake.failed", job_id=job_id, error=str(exc))
+    except Exception as exc:
+        if painted and not recorded:
+            _invalidate(job_dir, sidecar, timings)
+        if not painted:
+            (job_dir / FANTASY_PART).unlink(missing_ok=True)  # a half-painted canvas is nobody's
+        message = str(exc) if isinstance(exc, AtlasError) else f"{type(exc).__name__}: {exc}"
+        emit("error", message)
+        logger.warning("bake.failed", job_id=job_id, error=message)
         raise
+
+
+def _invalidate(job_dir: Path, sidecar: JobSidecar, timings: dict[str, float]) -> None:
+    """``fantasy.png`` was replaced but the bake failed before it was recorded:
+    drop the old bake/tiles claims (and a reset recipe) instead of leaving them
+    pointing at a canvas they no longer describe."""
+    sidecar.bake = None
+    sidecar.tiles = None
+    sidecar.timings = timings
+    if sidecar.chunk is not None:
+        sidecar.chunk = sidecar.chunk.model_copy(update={"image": None, "blend": None})
+    try:
+        save_sidecar(job_dir, sidecar)
+    except Exception as exc:  # noqa: BLE001 - the original failure is the one to report
+        logger.warning("bake.invalidate_failed", job_id=sidecar.job_id, error=str(exc))

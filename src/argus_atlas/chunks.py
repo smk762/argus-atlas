@@ -252,7 +252,9 @@ def find_neighbours(
             raise AtlasError(f"neighbour {other.job_id} ({c.tile}) is a {c.size} px chunk, this one is {chunk.size} px")
         if c.tile in found:
             raise AtlasError(f"two jobs hold chunk {c.tile} of {recipe}: {found[c.tile].job_id} and {other.job_id}")
-        image = child / c.image.path
+        image = (child / c.image.path).resolve()
+        if not image.is_relative_to(real):
+            raise AtlasError(f"neighbour {other.job_id}: its crop {c.image.path!r} is outside the job directory")
         if not image.is_file() or sha256_file(image) != c.image.sha256:
             raise AtlasError(f"neighbour {other.job_id}: {c.image.path} is missing or changed since its job.json")
         if relief is not None and relief_key(other.relief) != relief:
@@ -264,7 +266,7 @@ def find_neighbours(
         if recipe_sha256 is not None and other.recipe.sha256 != recipe_sha256:
             logger.warning("chunks.neighbour_recipe_changed", neighbour=other.job_id, tile=c.tile, recipe=recipe)
         found[c.tile] = ChunkNeighbour(
-            tile=c.tile, job_id=other.job_id, image=FileRef(path=str(image.resolve()), sha256=c.image.sha256)
+            tile=c.tile, job_id=other.job_id, image=FileRef(path=str(image), sha256=c.image.sha256)
         )
     return [found[t] for t in sorted(found)]
 
@@ -305,7 +307,11 @@ def build_seams(job_dir: Path, sidecar: JobSidecar, neighbours: list[ChunkNeighb
 
     init_tif, init_png = (job_dir / n for n in SEAM_FILES[SEAM_INIT_KIND])
     mask_tif, mask_png = (job_dir / n for n in SEAM_FILES[SEAM_MASK_KIND])
-    init_tif.unlink(missing_ok=True)
+    # gdal_rasterize/gdal_proximity update an existing output in place (keeping an earlier run's
+    # footprints and ignoring -init/-ts), so every derived raster of a previous seam run goes first.
+    for stale in (init_tif, init_png, mask_tif, mask_png, job_dir / SEAM_FOOTPRINT_TIF, job_dir / SEAM_DISTANCE_TIF):
+        stale.unlink(missing_ok=True)
+        gdal_ops.strip_aux(stale)
     commands.append(gdal_ops.run(gdal_ops.rgb_copy_argv(base, init_tif, grey=base_kind == "hillshade")))
     for n in neighbours:
         commands.append(gdal_ops.run(gdal_ops.paste_argv(Path(n.image.path), init_tif)))
@@ -405,7 +411,9 @@ def blend_chunk(
         offset = [0.0, 0.0, 0.0]
         if chunk.tone:
             theirs, ours = work / "tone_theirs.tif", work / "tone_ours.tif"
-            strip = f"where((B==255)*(C<={TONE_STRIP}),A,-1)"
+            # -1.0, not -1: numpy 2 (NEP 50) keeps where(cond, <uint8 band>, -1) uint8, so -1 wrapped to
+            # 255 and every cell outside the strip was averaged in as white (GDAL 3.12 / numpy 2.3 in CI).
+            strip = f"where((B==255)*(C<={TONE_STRIP}),A,-1.0)"
             commands.append(
                 run(
                     gdal_ops.calc_argv(
@@ -419,7 +427,7 @@ def blend_chunk(
                     )
                 )
             )
-            strip = f"where((B==0)*(C<={TONE_STRIP}),A,-1)"
+            strip = f"where((B==0)*(C<={TONE_STRIP}),A,-1.0)"
             commands.append(
                 run(
                     gdal_ops.calc_argv(
@@ -518,6 +526,7 @@ def crop_chunk(job_dir: Path, sidecar: JobSidecar) -> tuple[FileRef, GdalCommand
     dst = job_dir / CHUNK_TIF
     part = dst.with_name(f".{dst.name}.part")
     part.unlink(missing_ok=True)
+    gdal_ops.strip_aux(part)  # a stale PAM sidecar would override the crop's own georeferencing
     command = gdal_ops.run(gdal_ops.crop_argv(src, part, chunk.margin, chunk.margin, chunk.size, chunk.size))
     try:
         verify_alignment(part, chunk.inner)
@@ -525,7 +534,9 @@ def crop_chunk(job_dir: Path, sidecar: JobSidecar) -> tuple[FileRef, GdalCommand
         part.unlink(missing_ok=True)
         gdal_ops.strip_aux(part)
         raise
+    gdal_ops.strip_aux(part)
     dst.unlink(missing_ok=True)
+    gdal_ops.strip_aux(dst)
     part.replace(dst)
     return FileRef(path=dst.name, sha256=sha256_file(dst)), command
 
@@ -539,8 +550,10 @@ def published_chunk(job_dir: Path) -> JobSidecar | None:
     image = sidecar.chunk.image if sidecar.chunk is not None else None
     if image is None:
         return None
-    path = job_dir / image.path
-    return sidecar if path.is_file() and sha256_file(path) == image.sha256 else None
+    try:
+        return sidecar if sha256_file(job_dir / image.path) == image.sha256 else None
+    except OSError:  # missing, or gone/unreadable since: not a published crop
+        return None
 
 
 def run_chunk(
@@ -594,9 +607,13 @@ def run_chunk(
         if previous is None:
             return
         try:
-            if load_sidecar(out_dir).bake is None:
-                save_sidecar(out_dir, previous)
-                logger.info("chunks.kept_previous", job_id=job_id)
+            if load_sidecar(out_dir).bake is not None:
+                return
+            png = out_dir / previous.bake.image.path if previous.bake is not None else None
+            if png is not None and (not png.is_file() or sha256_file(png) != previous.bake.image.sha256):
+                return  # the canvas was repainted before the failure: the old record no longer describes it
+            save_sidecar(out_dir, previous)
+            logger.info("chunks.kept_previous", job_id=job_id)
         except (OSError, AtlasError):
             pass
 
@@ -629,9 +646,9 @@ def run_chunk(
         save_sidecar(out_dir, sidecar)
         sidecar = build_seams(out_dir, sidecar, neighbours)
         emit("controls", f"seams: {len(neighbours)} neighbour(s) of {recipe.recipe.name} pasted into the margin")
-    except AtlasError as exc:
+    except Exception as exc:  # any failure, not only ours: the earlier crop stays published
         keep_previous()
-        emit("error", str(exc))
+        emit("error", str(exc) if isinstance(exc, AtlasError) else f"{type(exc).__name__}: {exc}")
         raise
     if controls_only:
         return sidecar
@@ -639,14 +656,14 @@ def run_chunk(
     params = recipe_params(recipe.recipe, seed=recipe_seed(recipe.recipe, z, x, y))
     try:
         sidecar = run_bake(out_dir, params, backend, models_root=models_root, progress=progress)
-    except AtlasError:
+    except Exception:
         keep_previous()  # run_bake has emitted the error frame
         raise
     try:
         emit("tiles", f"cutting zoom {sidecar.zoom_range[0]}-{sidecar.zoom_range[1]} from {CHUNK_TIF}")
         record_tiles = tile_job(out_dir, sidecar)
-    except AtlasError as exc:
-        emit("error", str(exc))
+    except Exception as exc:  # every failure ends the stream with an error frame
+        emit("error", str(exc) if isinstance(exc, AtlasError) else f"{type(exc).__name__}: {exc}")
         raise
     emit("done", f"{record_tiles.n_tiles} tiles, zoom {record_tiles.min_zoom}-{record_tiles.max_zoom}")
     return load_sidecar(out_dir)

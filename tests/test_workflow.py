@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 import pytest
@@ -38,7 +39,9 @@ def test_example_template_uses_every_required_placeholder() -> None:
 
 
 def test_render_substitutes_typed_values_and_leaves_links() -> None:
-    graph = render_workflow(example_template(), VALUES)
+    template = example_template()
+    before = copy.deepcopy(template)
+    graph = render_workflow(template, VALUES)
     sampler = next(n for n in graph.values() if n["class_type"] == "KSampler")
     assert sampler["inputs"]["seed"] == 7 and sampler["inputs"]["denoise"] == 0.55
     assert sampler["inputs"]["model"] == ["2", 0], "node links are untouched"
@@ -47,7 +50,7 @@ def test_render_substitutes_typed_values_and_leaves_links() -> None:
     load = next(n for n in graph.values() if n["class_type"] == "LoadImage")
     assert load["inputs"]["image"] == "argus-atlas/aoi-1-hillshade.png"
     assert "$" not in str(graph), "no placeholder survives rendering"
-    assert example_template() != graph, "the template is not mutated"
+    assert template == before and "$seed" in str(template), "the template that was rendered is not mutated"
 
 
 def test_missing_required_placeholder_is_named() -> None:

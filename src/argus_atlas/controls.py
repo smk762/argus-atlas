@@ -25,6 +25,7 @@ from pathlib import Path
 import structlog
 
 from argus_atlas import gdal_ops
+from argus_atlas.attribution import input_sources
 from argus_atlas.hashing import sha256_file
 from argus_atlas.jobs import require_safe_id, save_sidecar
 from argus_atlas.labels import kept_labels
@@ -110,6 +111,8 @@ def plan_grid(
         raise AtlasError("give --long-side or --resolution, not both")
     xmin, ymin, xmax, ymax = bbox_to_mercator(bbox)
     w_m, h_m = xmax - xmin, ymax - ymin
+    if not (math.isfinite(w_m) and math.isfinite(h_m) and w_m > 0 and h_m > 0):
+        raise AtlasError(f"bbox {bbox.as_text()} has no extent in Web Mercator ({w_m:g} x {h_m:g} m)")
 
     if resolution is None:
         side = DEFAULT_LONG_SIDE if long_side is None else long_side
@@ -119,7 +122,7 @@ def plan_grid(
             )
         res = max(w_m, h_m) / side
     else:
-        if resolution <= 0:
+        if not (math.isfinite(resolution) and resolution > 0):
             raise AtlasError(f"resolution must be positive metres per pixel, got {resolution}")
         res = float(resolution)
 
@@ -157,7 +160,7 @@ def verify_raster_grid(path: Path, grid: Grid, *, tol: float = ALIGN_TOLERANCE) 
 
 
 def validate_layer_name(name: str) -> str:
-    if not re.match(LAYER_NAME_PATTERN, name):
+    if not re.fullmatch(LAYER_NAME_PATTERN, name):
         raise AtlasError(f"bad layer name {name!r}: lowercase letters, digits and _ only, up to 32 characters")
     if name in RESERVED_CONTROL_KINDS:
         raise AtlasError(f"layer name {name!r} is reserved (atlas writes that control itself)")
@@ -320,11 +323,13 @@ def build_controls(
     # Place names depend on the labelled grid only: a re-run on the same grid (a chunk re-bake) keeps them.
     labels, label_commands = kept_labels(out_dir, chunk.inner if chunk is not None else grid)
     layer_sources = {n: FileRef(path=str(p.resolve()), sha256=sha256_file(p)) for n, p in sources.items()}
+    dem_ref = FileRef(path=str(dem.resolve()), sha256=sha256_file(dem))
     sidecar = JobSidecar(
         generator=generator(),
         job_id=job_id,
         created_at=datetime.now(UTC).isoformat(timespec="seconds"),
-        dem=FileRef(path=str(dem.resolve()), sha256=sha256_file(dem)),
+        dem=dem_ref,
+        sources=input_sources(dem_ref, layer_sources),
         land_source=layer_sources.get("land"),
         layer_sources=layer_sources,
         bbox=bbox,

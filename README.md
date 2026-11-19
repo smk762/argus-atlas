@@ -1,4 +1,9 @@
-# argus-atlas
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/smk762/argus-cortex/dev/brand/packages/atlas/argus-atlas-lockup-dark.svg">
+    <img alt="argus-atlas" src="https://raw.githubusercontent.com/smk762/argus-cortex/dev/brand/packages/atlas/argus-atlas-lockup-light.svg" height="52">
+  </picture>
+</h1>
 
 [![PyPI](https://img.shields.io/pypi/v/argus-atlas.svg)](https://pypi.org/project/argus-atlas/)
 [![Python](https://img.shields.io/pypi/pyversions/argus-atlas.svg)](https://pypi.org/project/argus-atlas/)
@@ -53,7 +58,7 @@ argus-atlas controls --dem dem.tif --bbox 10.55,45.40,10.95,45.90 --out jobs/gar
 ATLAS_ALLOW_BAKE=1 argus-atlas bake jobs/garda-2 --checkpoint <ckpt> --workflow comfyui_sdxl_img2img_composite_nolora.json
 ```
 
-Any OGR-readable file works as a layer, in any CRS; a name outside the palette is burnt as a mask only and is available to a template as `$<name>`. Where to get such files (HydroSHEDS, Natural Earth, Geofabrik extracts, GADM, land cover …) is in [`docs/data-sources.md`](https://github.com/smk762/argus-atlas/blob/main/docs/data-sources.md). OSM data is ODbL; `osm.json` records the query and the data timestamp so the attribution can be traced.
+Any OGR-readable file works as a layer, in any CRS; a name outside the palette is burnt as a mask only and is available to a template as `$<name>`. Where to get such files (HydroSHEDS, Natural Earth, Geofabrik extracts, GADM, land cover …) is in [`docs/data-sources.md`](https://github.com/smk762/argus-atlas/blob/main/docs/data-sources.md). OSM data is ODbL; `osm.json` records the query and the data timestamp so the attribution can be traced, and every archive `tiles` and `mosaic` write carries the credit in its `attribution` metadata ([Attribution](https://github.com/smk762/argus-atlas/blob/main/docs/chunks-and-mosaic.md#attribution)).
 
 ## Presets and provenance
 
@@ -75,7 +80,7 @@ Place names never reach the model, which paints illegible lettering. `argus-atla
 
 ## Live demo
 
-- **[Realms](https://realms.dragonhound.dev)** drapes the Cook Strait chunk mosaic above over an OpenFreeMap basemap, with a style switch and an opacity slider: slide it to see the painted coastline sit on the real one.
+- **[Realms](https://realms.dragonhound.dev)** drapes the Cook Strait chunk mosaic above over an OpenFreeMap basemap, with a style switch and an opacity slider: slide it to see the painted coastline sit on the real one. What it needs live and how it is made: [What to run for which UI](https://docs.dragonhound.dev/setup/which-services/#realms).
 - **[Argus Studio](https://studio.dragonhound.dev/atlas/)** is the suite's web UI; its Atlas page is a thin shell over this package's API.
 
 To run it yourself, [`examples/flow.html`](https://github.com/smk762/argus-atlas/blob/main/examples/flow.html) runs the whole flow against a local server (AOI, OSM layers, controls, bake, tiles, drape) and [`examples/viewer.html`](https://github.com/smk762/argus-atlas/blob/main/examples/viewer.html) drapes any baked job on a MapLibre basemap with an opacity slider: start `argus-atlas serve --cors` (with `ATLAS_CORS_ORIGINS='*'`) and open the page, or feed it a `fantasy.pmtiles` directly. The first real AOI (Lake Garda, Copernicus GLO-30, Juggernaut XL, no LoRA) passed the alignment gate on 17 Oct 2026; [`docs/your-first-bake.md`](https://github.com/smk762/argus-atlas/blob/main/docs/your-first-bake.md) has the commands for your own.
@@ -109,7 +114,7 @@ argus-atlas dem --bbox 10.55,45.40,10.95,45.90 --out dem/garda.tif   # provenanc
 argus-atlas controls --dem dem/garda.tif --bbox 10.55,45.40,10.95,45.90 --out ./jobs/garda
 ```
 
-A tile the bucket lacks is an error that names it. Copernicus leaves out all-ocean tiles, so for a coast pass `--allow-missing` to fill them with 0 m, the sea level GLO-30 uses elsewhere. `--source` (or `ATLAS_DEM_SOURCE`) points at a mirror URL or a local directory laid out as `<key>/<key>.tif`. The command prints the Copernicus attribution; keep it with anything you publish. `controls` may widen the canvas past the bbox to reach whole multiples of 64 px, and cells outside the DEM become NoData, so pass `--cover` when the edges matter: it snaps the window outward instead, so the GeoTIFF contains the whole bbox, still on the lattice. For a chunk, `--tile z/x/y` (with the same `--size`/`--margin` as `chunk`) fetches exactly that chunk's canvas, margin included, and implies `--cover`. An AOI touching more than 16 GLO-30 tiles is refused unless you raise `--max-tiles`. There is no server route for this: it is an open-ended download plus a GDAL job, and it belongs with the operator who builds a job.
+A tile the bucket lacks is an error that names it. Copernicus leaves out all-ocean tiles, so for a coast pass `--allow-missing` to fill them with 0 m, the sea level GLO-30 uses elsewhere. `--source` (or `ATLAS_DEM_SOURCE`) points at a mirror URL or a local directory laid out as `<key>/<key>.tif`. The command prints the Copernicus attribution and records it in `<out>.json`, from which `tiles` and `mosaic` write it into every archive they publish. `controls` may widen the canvas past the bbox to reach whole multiples of 64 px, and cells outside the DEM become NoData, so pass `--cover` when the edges matter: it snaps the window outward instead, so the GeoTIFF contains the whole bbox, still on the lattice. For a chunk, `--tile z/x/y` (with the same `--size`/`--margin` as `chunk`) fetches exactly that chunk's canvas, margin included, and implies `--cover`. An AOI touching more than 16 GLO-30 tiles is refused unless you raise `--max-tiles`. There is no server route for this: it is an open-ended download plus a GDAL job, and it belongs with the operator who builds a job.
 
 Open `jobs/sample/hillshade.png`. If the relief looks right, the georeferencing is already fixed; the bake only changes pixel colours inside that frame.
 
@@ -229,6 +234,22 @@ ControlNet choice and weight live in the ComfyUI workflow template, not in Pytho
 
 The starter template names an SDXL depth ControlNet model directly; replace that name with whatever your ComfyUI has installed.
 
+### GPU leases (argus-iris)
+
+Every bake holds a GPU lease from the suite's coordinator, set host-wide by `ARGUS_GPU_*` (unset means no gating, which is how atlas ran before). With `ARGUS_GPU_COORDINATOR=broker`, a bake asks [argus-iris](https://github.com/smk762/argus-iris) for a `batch` lease on `comfyui` (kind `bake`, declared in [`gpu-tenant.yaml`](gpu-tenant.yaml)) and sends its prompt to the ComfyUI the grant names, or to `COMFYUI_BASE_URL` when the grant names none. The lease covers the ComfyUI round trip only: controls, the gate, the crop and the tiles are GDAL work and hold no GPU.
+
+`chunks` holds one lease for the whole block, taken when the first chunk is painted. Before each later chunk it checks whether the broker wants the GPU back. If it does, atlas releases the lease and queues again, pinned to the node the block started on so that one recipe is painted by one ComfyUI. A prompt already in ComfyUI runs to the end; nothing is killed. A refused or timed-out lease fails the bake with a message that says so. When iris can't be reached, the lease comes from `ARGUS_GPU_BROKER_FALLBACK`.
+
+| Variable | Value |
+|---|---|
+| `ARGUS_GPU_COORDINATOR` | `broker` (or `lease`, `none`) |
+| `ARGUS_GPU_BROKER_URL` | `http://<GPU_HOST>:8120` |
+| `ARGUS_GPU_BROKER_TOKEN` | the shared caller token (a secret: the host's `.env`, never a repo) |
+| `ARGUS_GPU_TENANT_MANIFEST` | `gpu-tenant.yaml` (the image ships it at `/app/gpu-tenant.yaml`, and compose sets that path) |
+| `ARGUS_GPU_BROKER_FALLBACK` | `lease` (default) or `none` |
+| `ARGUS_GPU_LEASE_TIMEOUT_S` | how long a lease may wait in the broker's queue (default 300 s); a background re-bake needs hours |
+| `ATLAS_GPU_PRIORITY` | the class atlas asks for: `batch` (default) or `background`, which queues behind every other tenant and runs on spare capacity |
+
 ## The alignment gate
 
 Before a GeoTIFF or any tile is written, all of the following must hold:
@@ -249,6 +270,7 @@ The three failures new users hit, and what to do:
 | `--resolution` too fine, largest `--bbox` that fits is printed | Bounding box is too large for the 1536 cap at that ground resolution | Use the `--bbox` the message gives you, or drop `--resolution` and let `--long-side` choose the resolution. |
 | `doctor` shows `backend: comfyui — unreachable (...)`; `bake` fails with `ComfyUI request to <url> failed: ...` | Nothing listening on `COMFYUI_BASE_URL` | Start ComfyUI on the host, or pass `--comfyui-url`. Inside Compose the default reaches the host via `host.docker.internal`. |
 | `bake` exits 3 | `ATLAS_ALLOW_BAKE` is not `1` | Set it on purpose. The default is read-only so a demo box cannot be made to spend GPU time. |
+| `bake` fails with `the GPU broker refused the lease: …` or `no GPU lease in time: …` | `ARGUS_GPU_COORDINATOR=broker` and iris would not place the bake | Read the reason it gives; the bake is not retried. Unset `ARGUS_GPU_COORDINATOR` to bake without leases. |
 
 ## HTTP API
 
@@ -330,14 +352,14 @@ docker compose --profile test run --rm test   # the suite against real GDAL, no 
 
 Versioning is derived from git tags via `hatch-vcs`.
 
-**Branches and releases.** Work lands on `dev` (the default branch) through PRs, and `main` must never be ahead of `dev`. Branch from `origin/dev` and never push to `main` directly. Because `main` is protected, a release is a PR from `dev` into `main`:
+**Branches and releases.** Work lands on `dev` (the default branch) through PRs, and `main` must never be ahead of `dev`, except by a release PR's merge commit (step 4). Branch from `origin/dev` and never push to `main` directly. Because `main` is protected, a release is a PR from `dev` into `main`:
 
 1. Cut the CHANGELOG on `dev`: rename `[Unreleased]` to `[X.Y.Zrc1] - <date>`, then open the `dev` → `main` PR.
 2. Tag `vX.Y.Zrc1` on the PR's head commit. That publishes a pre-release to PyPI, GHCR (`:X.Y.Zrc1`, never `:latest`) and GitHub Releases, so the exact commit under review can be installed and baked with.
 3. Fixes go to `dev` and get `rc2`, `rc3`, …, each with its own CHANGELOG heading.
-4. Once approved, rename the heading to `[X.Y.Z]`, merge the PR, then immediately merge `main` back into `dev` (`git switch dev && git merge --ff-only origin/main` if possible, otherwise a merge commit) so the release merge commit is not left on `main` alone. Tag `vX.Y.Z` on `main`. Only finals move `:latest` and the `:X.Y` image tag.
+4. Once approved, rename the heading to `[X.Y.Z]` and merge the PR. Its merge commit stays on `main` alone, one commit ahead of `dev` with an identical tree: that is the one exception to the rule, so don't merge `main` back into `dev`. Anything else on `main` that `dev` lacks is a mistake (`git diff origin/dev origin/main` must be empty). Tag `vX.Y.Z` on `main`. Only finals move `:latest` and the `:X.Y` image tag.
 
-If `main` stops requiring a PR, a release instead fast-forwards it to a `dev` commit that passed CI (`git push origin origin/dev:main`) and tags it there.
+If `main` stops requiring a PR, a release instead fast-forwards it to a `dev` commit that passed CI (`git push origin origin/dev:main`) and tags it there. That needs `main` to be an ancestor of `dev`, which a release merge commit prevents, so once one exists releases stay PRs.
 
 `main` only changes through a PR with green CI. CI is a standalone workflow that apt-installs `gdal-bin` and `python3-gdal` before running the suite, since the tests drive real GDAL on a synthetic DEM. Release publishes to PyPI (OIDC trusted publishing) and GHCR on `v*` tags. This repo was scaffolded from [`argus-pkg-template`](https://github.com/smk762/argus-pkg-template); run `copier update` to pull template changes.
 

@@ -168,3 +168,72 @@ def test_pending_prompt_keeps_polling(tmp_path: Path, controls: dict[str, Path])
     )
     backend.generate(BakeRequest("j", GRID, PARAMS, controls), tmp_path / "out.png")
     assert (tmp_path / "out.png").is_file()
+
+
+def test_finish_between_history_and_queue_reads_is_success(tmp_path: Path, controls: dict[str, Path]) -> None:
+    """The prompt leaves /queue for /history between the two reads: a re-read of /history finds it."""
+
+    class Racy(FakeTransport):
+        def get_json(self, path: str) -> dict:
+            if path == "/queue":
+                return {"queue_running": [], "queue_pending": []}  # already done by the time /queue is read
+            return super().get_json(path)
+
+    transport = Racy()
+    transport._tmp = str(tmp_path)
+    backend = ComfyUIBackend(
+        example_template(), "http://comfy:8188", transport=transport, poll_interval=0.0, vanish_after=0.0
+    )
+    backend.generate(BakeRequest("j", GRID, PARAMS, controls), tmp_path / "out.png")
+    assert (tmp_path / "out.png").is_file()
+
+
+def test_multipart_names_cannot_break_out_of_their_header() -> None:
+    body, _ = encode_multipart(
+        field='im"age', filename='a".png\r\nContent-Type: text/html', data=b"X", fields={'k"\r\nX-Evil: 1': "v"}
+    )
+    assert b"X-Evil" in body and b"\r\nX-Evil" not in body, "the field name stays inside its quotes"
+    assert b'name="k%22%0D%0AX-Evil: 1"\r\n\r\nv\r\n' in body
+    assert b'name="im%22age"; filename="a%22.png%0D%0AContent-Type: text/html"\r\nContent-Type: image/png\r\n' in body
+    assert body.count(b"\r\nContent-Type:") == 1
+
+
+def test_transport_failures_are_backend_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    import http.client
+    import urllib.error
+    import urllib.request
+
+    from argus_atlas.backends.http import UrllibTransport
+
+    transport = UrllibTransport("http://comfy.invalid:8188")
+
+    def raising(exc: BaseException):  # noqa: ANN202
+        def urlopen(*_args: object, **_kwargs: object) -> None:
+            raise exc
+
+        return urlopen
+
+    # The engine went away mid-response: an http.client error, neither URLError nor OSError.
+    for exc in (http.client.IncompleteRead(b"par"), http.client.BadStatusLine("")):
+        monkeypatch.setattr(urllib.request, "urlopen", raising(exc))
+        with pytest.raises(BackendError, match="request to http://comfy.invalid:8188/history failed"):
+            transport.get_bytes("/history")
+
+    class Unreadable(io.BytesIO):
+        def read(self, *_args: object) -> bytes:
+            raise ConnectionResetError("reset while reading the error body")
+
+    error = urllib.error.HTTPError("http://comfy.invalid:8188/prompt", 502, "Bad Gateway", {}, Unreadable())  # type: ignore[arg-type]
+    monkeypatch.setattr(urllib.request, "urlopen", raising(error))
+    with pytest.raises(BackendError, match="returned HTTP 502"):
+        transport.post_json("/prompt", {})
+
+
+def test_a_model_that_cannot_be_read_is_a_backend_error(tmp_path: Path) -> None:
+    from argus_atlas.backends.base import hash_model
+
+    with pytest.raises(BackendError, match="cannot hash model 'gone.safetensors'"):
+        hash_model(lambda name: tmp_path / name, "gone.safetensors")
+    (tmp_path / "dir.safetensors").mkdir()
+    with pytest.raises(BackendError, match="cannot hash model 'dir.safetensors'"):
+        hash_model(lambda name: tmp_path / name, "dir.safetensors")

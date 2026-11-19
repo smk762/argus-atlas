@@ -45,18 +45,45 @@ UA = "argus-atlas-fetch/1 (+https://github.com/smk762/argus-atlas)"
 
 
 def model_id(arg: str) -> int:
-    """Accept a bare id or a civitai.com/models/<id>[/slug] URL."""
-    m = re.search(r"(?:^|/models/)(\d+)", arg)
+    """Accept a bare id or a civitai.com/models/<id>[/slug] URL, nothing else.
+
+    A download link (``/api/download/models/<id>``) carries a *version* id, so it is refused
+    rather than read as a model id.
+    """
+    if re.fullmatch(r"\d+", arg):
+        return int(arg)
+    url = urllib.parse.urlsplit(arg if "://" in arg else "https://" + arg)
+    m = re.match(r"/models/(\d+)(?:/|$)", url.path) if url.hostname and "." in url.hostname else None
     if not m:
-        raise argparse.ArgumentTypeError(f"not a Civitai model id or URL: {arg!r}")
+        raise argparse.ArgumentTypeError(
+            f"not a Civitai model id or model page URL: {arg!r} (a download link holds a version id: use --version)"
+        )
     return int(m.group(1))
+
+
+class _SameHostAuthRedirect(urllib.request.HTTPRedirectHandler):
+    """Drop ``Authorization`` when a redirect leaves the original host.
+
+    Civitai answers downloads with a 30x to a presigned CDN/object-store URL;
+    urllib would otherwise copy the bearer token to that third party (and some
+    stores reject a presigned URL that also carries an Authorization header).
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201, PLR0913
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and urllib.parse.urlsplit(newurl).hostname != urllib.parse.urlsplit(req.full_url).hostname:
+            new.remove_header("Authorization")
+        return new
+
+
+_OPENER = urllib.request.build_opener(_SameHostAuthRedirect)
 
 
 def fetch_json(url: str, token: str | None) -> dict:
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json"})
     if token:
         req.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    with _OPENER.open(req, timeout=60) as resp:
         data = json.load(resp)
     if "error" in data and "name" not in data:
         raise SystemExit(f"{url}: {data['error']}")
@@ -91,6 +118,20 @@ def slug(name: str) -> str:
     return s[:60] or "lora"
 
 
+def safe_file_name(name: object) -> str:
+    """A remote-supplied file name reduced to one plain path component, or ``SystemExit``.
+
+    The name comes from whoever uploaded the model: ``../../.bashrc`` or an
+    absolute path must never steer where the download is written.
+    """
+    if not isinstance(name, str) or "\x00" in name:
+        raise SystemExit(f"refusing remote file name {name!r}")
+    base = Path(name.replace("\\", "/")).name
+    if base in ("", ".", "..") or base != name:
+        raise SystemExit(f"refusing remote file name {name!r}: not a plain file name")
+    return base
+
+
 def describe_version(version: dict) -> str:
     f = primary_file(version) or {}
     size = round((f.get("sizeKB") or 0) / 1024)
@@ -115,7 +156,7 @@ def describe(model: dict, version: dict | None, *, all_matching: list[dict] | No
             + "\n    (newest is picked; --version <id> for another)"
         )
     if version is None:
-        bases = sorted({v.get("baseModel") for v in model.get("modelVersions", [])})
+        bases = sorted({v["baseModel"] for v in model.get("modelVersions", []) if v.get("baseModel")})
         return head + f"\n    no matching version; available base models: {bases}"
     return head + "\n" + describe_version(version)
 
@@ -155,13 +196,13 @@ def download(url: str, dest: Path, token: str | None, expected_sha: str | None, 
         print(f"    resuming at {done / 1048576:,.0f} MB", file=sys.stderr)
 
     for attempt in range(1, attempts + 1):
+        # the token travels only as the ``token=`` query parameter Civitai reads;
+        # no Authorization header, so nothing follows the redirect to the CDN
         req = urllib.request.Request(url, headers={"User-Agent": UA})
-        if token:
-            req.add_header("Authorization", f"Bearer {token}")
         if done:
             req.add_header("Range", f"bytes={done}-")
         try:
-            resp = urllib.request.urlopen(req, timeout=120)
+            resp = _OPENER.open(req, timeout=120)
         except urllib.error.HTTPError as exc:
             if exc.code == 416 and done:  # range past the end: the .part is already complete
                 break
@@ -178,7 +219,9 @@ def download(url: str, dest: Path, token: str | None, expected_sha: str | None, 
         with resp:
             if "text/html" in resp.headers.get("Content-Type", ""):
                 raise SystemExit(
-                    f"{resp.geturl()}: got an HTML page instead of a file — the model probably needs a token"
+                    # the URL without its query: that is where the token travels
+                    f"{resp.geturl().split('?', 1)[0]}: got an HTML page instead of a file"
+                    " — the model probably needs a token"
                 )
             if done and resp.status != 206:  # server ignored the Range: start over
                 print("    server does not resume; restarting from 0", file=sys.stderr)
@@ -247,8 +290,11 @@ def main() -> None:
             print("    no .safetensors file in that version", file=sys.stderr)
             continue
         folder = args.out / "loras" / args.subdir / slug(model["name"])
+        name = safe_file_name(f.get("name"))
         folder.mkdir(parents=True, exist_ok=True)
-        dest = folder / f["name"]
+        dest = folder / name
+        if dest.resolve().parent != folder.resolve():
+            raise SystemExit(f"refusing to write {dest}: outside {folder}")
         expected = (f.get("hashes") or {}).get("SHA256")
         if dest.is_file():
             digest = hashlib.sha256(dest.read_bytes()).hexdigest()
@@ -271,8 +317,8 @@ def main() -> None:
             "allow_no_credit": model.get("allowNoCredit"),
             "url": f"https://civitai.com/models/{model['id']}?modelVersionId={version['id']}",
         }
-        (folder / (Path(f["name"]).stem + ".civitai.json")).write_text(json.dumps(sidecar, indent=2) + "\n")
-        print(f"    ok  sha256={digest}  comfyui name: {args.subdir}/{slug(model['name'])}/{f['name']}")
+        (folder / (Path(name).stem + ".civitai.json")).write_text(json.dumps(sidecar, indent=2) + "\n")
+        print(f"    ok  sha256={digest}  comfyui name: {args.subdir}/{slug(model['name'])}/{name}")
 
     print(
         f"\nship it:  rsync -av {args.out}/loras/ <GPU_HOST>:<MODELS_DIR>/loras/   "

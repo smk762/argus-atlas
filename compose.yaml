@@ -34,6 +34,15 @@ x-atlas: &atlas
     ATLAS_DEM_SOURCE: ${ATLAS_DEM_SOURCE:-}
     ATLAS_OVERPASS_URL: ${ATLAS_OVERPASS_URL:-}
     ATLAS_RECIPES_DIR: /data/recipes
+    # GPU leases (argus-iris broker): host-wide, the same values every argus GPU service gets. Unset is no gating.
+    ARGUS_GPU_COORDINATOR: ${ARGUS_GPU_COORDINATOR:-}
+    ARGUS_GPU_BROKER_URL: ${ARGUS_GPU_BROKER_URL:-}
+    ARGUS_GPU_BROKER_TOKEN: ${ARGUS_GPU_BROKER_TOKEN:-}
+    ARGUS_GPU_BROKER_FALLBACK: ${ARGUS_GPU_BROKER_FALLBACK:-}
+    ARGUS_GPU_TENANT: ${ARGUS_GPU_TENANT:-}
+    ARGUS_GPU_TENANT_MANIFEST: ${ARGUS_GPU_TENANT_MANIFEST:-/app/gpu-tenant.yaml}  # shipped in the image
+    ARGUS_GPU_LEASE_TIMEOUT_S: ${ARGUS_GPU_LEASE_TIMEOUT_S:-}  # how long a lease may wait in iris's queue
+    ATLAS_GPU_PRIORITY: ${ATLAS_GPU_PRIORITY:-}  # batch unless set; background for a long re-bake
   # Long syntax with create_host_path: false, so a mistyped *_HOST path fails the run instead of
   # docker creating an empty root-owned directory that the container (your uid) cannot write.
   volumes:

@@ -87,8 +87,10 @@ def stamp(png: Path, tif: Path, grid: Grid, *, description: str | None = None) -
     """
     check_png_canvas(png, grid)
     part = tif.with_name(f".{tif.name}.part")
-    if part.exists():
-        part.unlink()
+    # GDAL reads georeferencing from a PAM .aux.xml before the TIFF's own tags: a leftover
+    # one (of an earlier part, or of the old tif) would override the grid just stamped.
+    part.unlink(missing_ok=True)
+    gdal_ops.strip_aux(part)
     command = gdal_ops.run(gdal_ops.stamp_argv(png, part, grid, description=description))
     try:
         verify_alignment(part, grid)
@@ -96,8 +98,9 @@ def stamp(png: Path, tif: Path, grid: Grid, *, description: str | None = None) -
         part.unlink(missing_ok=True)
         gdal_ops.strip_aux(part)
         raise
-    if tif.exists():
-        tif.unlink()
+    gdal_ops.strip_aux(part)
+    tif.unlink(missing_ok=True)
+    gdal_ops.strip_aux(tif)
     part.replace(tif)
     logger.info("georef.stamped", tif=str(tif), width=grid.width, height=grid.height)
     return command

@@ -10,6 +10,7 @@ interface is a :class:`~typing.Protocol` so another engine is a config change.
 from __future__ import annotations
 
 import glob
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -81,17 +82,26 @@ def make_dir_resolver(root: Path) -> ModelResolver:
     under ``checkpoints/`` / ``loras/``, then a recursive search by basename."""
     root = root.expanduser()
 
+    def inside(candidate: Path) -> bool:
+        # Lexical, not resolved: the name can't climb out (no absolute path, no ``..``), and a
+        # symlink the operator put under the root (a split model tree) is theirs to follow.
+        top = os.path.abspath(root)
+        return os.path.commonpath([top, os.path.abspath(candidate)]) == top
+
     def resolve(name: str) -> Path:
-        direct = root / name
-        if direct.is_file():
+        rel = Path(name)
+        if not name or "\x00" in name or rel.is_absolute() or ".." in rel.parts:
+            raise FileNotFoundError(f"model name {name!r} must be a relative path under the models root")
+        direct = root / rel
+        if direct.is_file() and inside(direct):
             return direct
         for sub in _MODEL_SUBDIRS:
-            candidate = root / sub / name
-            if candidate.is_file():
+            candidate = root / sub / rel
+            if candidate.is_file() and inside(candidate):
                 return candidate
         basename = glob.escape(Path(name).name)
         for candidate in sorted(root.rglob(basename)) if root.is_dir() else []:
-            if candidate.is_file():
+            if candidate.is_file() and inside(candidate):
                 return candidate
         raise FileNotFoundError(f"no model named {name!r} under {root}")
 
@@ -104,4 +114,8 @@ def hash_model(resolve: ModelResolver, name: str) -> ModelRef:
         path = resolve(name)
     except Exception as exc:  # the resolver signals "not found" however it likes
         raise BackendError(f"cannot hash model {name!r}: {exc}") from exc
-    return ModelRef(name=name, sha256=sha256_cached(path))
+    try:
+        digest = sha256_cached(path)
+    except OSError as exc:  # missing, unreadable, a directory, or gone since it was resolved
+        raise BackendError(f"cannot hash model {name!r}: {exc}") from exc
+    return ModelRef(name=name, sha256=digest)

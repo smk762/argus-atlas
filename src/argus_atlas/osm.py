@@ -21,6 +21,7 @@ recorded input like the DEM.
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -53,6 +54,8 @@ class LayerPreset:
     min_zoom: int = 0  # below this the layer is empty on purpose
 
     def tags_for(self, zoom: int) -> dict[str, list[str] | None]:
+        if zoom < self.min_zoom:
+            return {}
         applicable = [z for z in self.rules if z <= zoom]
         return self.rules[max(applicable)] if applicable else {}
 
@@ -117,7 +120,19 @@ LAYER_PRESETS: dict[str, LayerPreset] = {
 }
 
 
+# OSM keys and the values the presets match: plain tokens only, so nothing interpolated into
+# Overpass QL (a string literal, or a regex alternation) or OGR SQL can change its structure.
+_TOKEN = re.compile(r"[A-Za-z0-9_:\-]+")
+
+
+def _check_tokens(tag: str, values: list[str] | None) -> None:
+    for token in [tag, *(values or [])]:
+        if not isinstance(token, str) or not _TOKEN.fullmatch(token):
+            raise AtlasError(f"OSM tag/value {token!r} must be letters, digits, '_', ':' or '-' only")
+
+
 def _overpass_filter(tag: str, values: list[str] | None) -> str:
+    _check_tokens(tag, values)
     if values is None:
         return f'["{tag}"]'
     if len(values) == 1:
@@ -126,10 +141,12 @@ def _overpass_filter(tag: str, values: list[str] | None) -> str:
 
 
 def _sql_filter(tag: str, values: list[str] | None) -> str:
+    _check_tokens(tag, values)
+    column = '"' + tag.replace('"', '""') + '"'  # a quoted identifier, so keys like name:en are columns too
     if values is None:
-        return f"{tag} IS NOT NULL"
+        return f"{column} IS NOT NULL"
     quoted = ", ".join("'" + v.replace("'", "''") + "'" for v in values)
-    return f"{tag} IN ({quoted})"
+    return f"{column} IN ({quoted})"
 
 
 def build_query(bbox: BBox, layers: list[str], zoom: int, *, timeout: int = 180) -> str:
@@ -174,19 +191,53 @@ def _preset(name: str) -> LayerPreset:
 def overpass_fetch(query: str, url: str = DEFAULT_OVERPASS_URL, *, timeout: float = 300.0) -> bytes:
     """POST *query* to an Overpass endpoint and return the XML. Overpass refuses
     requests without a User-Agent, so one is always sent."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        # urllib would also open file:// and ftp:// URLs; an Overpass endpoint is only ever HTTP(S).
+        raise AtlasError(f"Overpass URL must be http(s)://host/..., got {url!r}")
     data = urllib.parse.urlencode({"data": query}).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _NO_REDIRECT.open(req, timeout=timeout) as resp:
             body = resp.read()
     except urllib.error.HTTPError as exc:
-        detail = exc.read(400).decode("utf-8", "replace").strip()
-        raise AtlasError(f"Overpass {url} answered HTTP {exc.code}: {detail or exc.reason}") from exc
+        # The body goes to the log, not into the error: errors reach API clients.
+        logger.warning(
+            "osm.overpass_http_error", url=url, status=exc.code, body=exc.read(400).decode("utf-8", "replace")
+        )
+        raise AtlasError(f"Overpass {url} answered HTTP {exc.code} {exc.reason}") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise AtlasError(f"Overpass {url} unreachable: {exc}") from exc
     if not body.lstrip().startswith(b"<?xml"):
-        raise AtlasError(f"Overpass {url} returned something that is not OSM XML: {body[:200]!r}")
+        logger.warning("osm.overpass_not_xml", url=url, head=body[:200].decode("utf-8", "replace"))
+        raise AtlasError(f"Overpass {url} returned {len(body)} bytes that are not OSM XML")
+    remark = overpass_runtime_error(body)
+    if remark is not None:
+        raise AtlasError(f"Overpass {url} failed mid-query (the data would be partial): {remark}")
     return body
+
+
+_REMARK = re.compile(rb"<remark>(.*?)</remark>", re.DOTALL)
+
+
+def overpass_runtime_error(body: bytes) -> str | None:
+    """The ``<remark>`` Overpass puts in an HTTP 200 answer when the query timed out or ran out
+    of memory (the elements before it are a truncated result), else ``None``."""
+    for match in _REMARK.finditer(body):
+        text = match.group(1).decode("utf-8", "replace").strip()
+        if "error" in text.lower():
+            return text[:300]
+    return None
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A POST to Overpass is answered directly; a redirect could only point the request elsewhere."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201, PLR0913
+        raise urllib.error.HTTPError(newurl, code, f"redirect refused ({msg})", headers, fp)
+
+
+_NO_REDIRECT = urllib.request.build_opener(_NoRedirect)
 
 
 def extract_layers(osm: Path, out_dir: Path, layers: list[str], zoom: int) -> tuple[dict[str, Path], list[GdalCommand]]:
@@ -214,11 +265,8 @@ def osm_timestamp(osm: Path) -> str | None:
     """The ``osm_base`` timestamp in the extract's header, if present."""
     with osm.open("rb") as f:
         head = f.read(2048).decode("utf-8", "replace")
-    marker = 'osm_base="'
-    if marker in head:
-        start = head.index(marker) + len(marker)
-        return head[start : head.index('"', start)]
-    return None
+    found = re.search(r'osm_base="([^"]*)"', head)  # a value cut off by the read is no timestamp
+    return found.group(1) if found else None
 
 
 def fetch_osm(

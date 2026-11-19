@@ -7,6 +7,7 @@ import math
 import shutil
 from pathlib import Path
 
+import click
 import pytest
 import typer
 from fastapi.testclient import TestClient
@@ -100,7 +101,8 @@ def test_cli_rejects_a_bad_z_factor(tmp_path: Path) -> None:
     # Below zero is a usage error naming the option; zero passes Typer's range and is refused by
     # resolve_relief (asserted directly: the CLI gets there only with GDAL and a real DEM).
     result = runner.invoke(app, [*args, "--ve", "-1"])
-    assert result.exit_code == 2 and "--vertical-exaggeration" in result.output
+    # Unstyled: under CI rich colours the option name in pieces.
+    assert result.exit_code == 2 and "--vertical-exaggeration" in click.unstyle(result.output)
     with pytest.raises(AtlasError, match="vertical exaggeration must be a positive number"):
         resolve_relief(plan_grid(TEST_BBOX), vertical_exaggeration=0.0)
     commands = typer.main.get_command(app).commands  # type: ignore[attr-defined]

@@ -30,6 +30,7 @@ Each rule names the check that fails when it is broken. A rule marked **UNENFORC
 | Never | Enforced by |
 |---|---|
 | The model's output defines the geotransform, or a `fantasy.tif` exists before `verify_alignment` passes | `test_georef::test_one_pixel_off_fails_gate_without_geotiff`, `test_bake::test_off_by_one_fails_gate_keeps_png_records_failure` |
+| `argus_atlas.addressing` (imported by argus-realms' deterministic rules) loading a network client, GDAL or the bake stack | `test_addressing::test_addressing_imports_no_network_client_gdal_or_bake_stack` |
 | Tiles above native zoom | `test_cli::test_controls_inspect_and_tiles_round_trip` |
 | A chunk tiles coarser than its own zoom (it would spill into its neighbours) | `test_chunks::test_tiles_never_start_coarser_than_the_chunk` |
 | The blend touches `fantasy.tif` | `test_chunks::test_blend_closes_the_seam_and_keeps_the_painted_canvas` |

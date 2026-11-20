@@ -4,9 +4,12 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-20
+
 ### Changed
 
 - **Chunk tile addressing has its own light module, `argus_atlas.addressing`** (#69): `parse_tile`, `chunk_grids`, `chunk_bbox`, `canvas_bbox`, `neighbour_tiles`, `chunk_job_id`, `chunk_native_zoom`, `validate_chunk` and the chunk size/margin constants. It imports only `mercator` and `models`, so argus-realms' deterministic rules and the Pyodide arena no longer load GDAL wrappers, the bake stack, `urllib.request` or `http.client` (0.4.0's `chunks` did, via `controls → attribution → dem`). `chunks` re-exports all of it, so existing imports keep working; `test_addressing` holds the module to its import list.
+- opentelemetry-api 1.45.1 → 1.45.2 (#71).
 
 ## [0.4.0] - 2026-11-19
 

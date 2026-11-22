@@ -85,7 +85,8 @@ def _opsec_findings(text: str, terms: list[str]) -> list[str]:
         if not (label == "email" and m.group(0).lower() in ALLOWED_EMAILS)
     ]
     denied = _denylist_pattern(terms)
-    found += ["OPSEC_DENYLIST term" for _ in denied.finditer(text)] if denied else []  # never echo a secret term
+    hits = {m.group(0).lower() for m in denied.finditer(text)} if denied else set()
+    found += ["OPSEC_DENYLIST term"] * len(hits)  # one per term found, never echoing it
     return found
 
 
@@ -125,6 +126,7 @@ def test_the_denylist_matches_whole_words_case_insensitively_and_never_echoes_a_
     for text in ("examplehosts", "myexamplehost", "examplehost_2", "other-boxes", "another-box"):
         assert _opsec_findings(text, FAKE_TERMS) == [], text  # a term inside a longer word is not that name
     assert not any("examplehost" in f.lower() for f in _opsec_findings("examplehost", FAKE_TERMS))
+    assert _opsec_findings("examplehost, EXAMPLEHOST", FAKE_TERMS) == ["OPSEC_DENYLIST term"]  # per term, not per hit
 
 
 def test_the_denylist_comes_from_the_env_and_the_untracked_file(tmp_path: Path, monkeypatch) -> None:

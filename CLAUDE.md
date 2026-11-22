@@ -44,7 +44,7 @@ Each rule names the check that fails when it is broken. A rule marked **UNENFORC
 | A server route for `dem` | `test_dem::test_server_has_no_dem_route` |
 | A route builds labels, or place names reach the model | `test_rules::test_no_route_builds_labels`, `::test_place_names_never_reach_the_model` |
 | GDAL from pip, or rasterio as a dependency | `test_rules::test_no_gdal_wheel_or_rasterio_is_a_dependency` (uv.lock and pyproject) |
-| Machine names, host paths, LAN addresses or emails in `docs/`, README, CHANGELOG or `.env.example` (Studio and Realms import `docs/`) | `test_rules::test_published_docs_pass_the_opsec_gate`, plus the CI secret `OPSEC_DENYLIST` for private names |
+| Machine names, host paths, LAN addresses or emails in `docs/`, README, CHANGELOG or `.env.example` (Studio and Realms import `docs/`) | `test_rules::test_published_docs_pass_the_opsec_gate` (IPs, paths, emails always; machine names from `OPSEC_DENYLIST`: the CI secret, the env or the gitignored `.opsec-denylist`, never committed; unset, the name check is skipped with a notice), `::test_the_denylist_matches_whole_words_case_insensitively_and_never_echoes_a_term` |
 | A geocache source read without `opencaching.allow_reuse` | `test_rules::test_every_geocache_source_goes_through_the_licence_gate` |
 | Weights copied into the image, or compose writing the checkout as root | `test_rules::test_weights_are_mounted_read_only_and_never_copied_into_the_image`, `::test_compose_never_runs_as_root_on_the_mounts`. A hand-typed `docker run` as root can't be checked: don't (it leaves root-owned `__pycache__`). |
 | A failed bake reported to the GPU broker as `ok`, or a yielded block re-queued on another node | `test_gpu::test_a_failed_bake_is_reported_to_the_broker_as_failed`, `::test_a_block_holds_one_lease_and_requeues_on_the_same_node_when_asked` |
@@ -65,6 +65,7 @@ The module docstrings describe each module. What they don't say:
 - `server/app.py`: FastAPI on **:8105** (peers: lens :8100 … proof :8104). `examples/flow.html` drives the whole flow through the API; `examples/viewer.html` only reviews.
 - `templates/`: the starter ComfyUI graphs. ControlNet name and weight are hard-coded there on purpose. `--workflow <bare packaged name>` selects a packaged template; any other value is a path.
 - `docs/` is imported by Studio and Realms at `dev` HEAD. `docs/cli.md` is generated (`make docs`). `docs/your-first-bake.md` uses `.env` placeholders (`<GPU_HOST>`, `$ATLAS_*_HOST`). The v0 product spec isn't committed; **What this is** and the README summarise it.
+- **Opsec deny terms are never committed.** The machine names the docs gate refuses come only from `OPSEC_DENYLIST` (comma- or newline-separated, whole words, case-insensitive): the repository secret in CI, the environment or the gitignored `.opsec-denylist` file locally. Never write them into the gate, a test, a fixture, a comment or a commit message; tests use fake terms. Secrets don't reach PRs from forks, so there the name check is skipped (one skip notice) while the rest of the gate runs.
 - `tests/` builds a tiny Float32 DEM with GDAL (`conftest.dem`) and paints with a `FakeBackend`. CI has no GPU and no ComfyUI.
 
 ## Commands

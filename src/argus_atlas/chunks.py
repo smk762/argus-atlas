@@ -249,6 +249,8 @@ def build_seams(job_dir: Path, sidecar: JobSidecar, neighbours: list[ChunkNeighb
     """
     if sidecar.chunk is None:
         raise AtlasError(f"{sidecar.job_id} is not a chunk job")
+    # gdal_proximity runs from the job dir: a relative job_dir would be joined twice there.
+    job_dir = job_dir.resolve()
     started = time.perf_counter()
     grid = sidecar.grid
     commands: list[GdalCommand] = []
@@ -264,6 +266,11 @@ def build_seams(job_dir: Path, sidecar: JobSidecar, neighbours: list[ChunkNeighb
     for stale in (init_tif, init_png, mask_tif, mask_png, job_dir / SEAM_FOOTPRINT_TIF, job_dir / SEAM_DISTANCE_TIF):
         stale.unlink(missing_ok=True)
         gdal_ops.strip_aux(stale)
+    if SEAM_INIT_KIND in sidecar.controls or SEAM_MASK_KIND in sidecar.controls:
+        # The files are gone: until this run records new ones, job.json must not point at them.
+        dropped = {k: v for k, v in sidecar.controls.items() if k not in (SEAM_INIT_KIND, SEAM_MASK_KIND)}
+        sidecar = sidecar.model_copy(update={"controls": dropped})
+        save_sidecar(job_dir, sidecar)
     commands.append(gdal_ops.run(gdal_ops.rgb_copy_argv(base, init_tif, grey=base_kind == "hillshade")))
     for n in neighbours:
         commands.append(gdal_ops.run(gdal_ops.paste_argv(Path(n.image.path), init_tif)))
@@ -541,17 +548,22 @@ def run_chunk(
     from argus_atlas.recipes import recipe_params, recipe_seed
     from argus_atlas.tiles import tile_job
 
-    z, x, y = parse_tile(tile)
-    canvas, inner = chunk_grids(z, x, y, size=size, margin=margin)
-    validate_seams(size, margin, mask_feather=mask_feather, feather=feather)
-    if not controls_only and (backend is None or models_root is None):
-        raise AtlasError("baking a chunk needs a backend and a models root")
     job_id = out_dir.name
-    previous = published_chunk(out_dir)
 
     def emit(kind: str, message: str) -> None:
         if progress is not None:
             progress(ProgressEvent(job_id=job_id, type=kind, message=message))  # type: ignore[arg-type]
+
+    try:  # nothing is written yet, but the stream still ends with an error frame
+        z, x, y = parse_tile(tile)
+        canvas, inner = chunk_grids(z, x, y, size=size, margin=margin)
+        validate_seams(size, margin, mask_feather=mask_feather, feather=feather)
+        if not controls_only and (backend is None or models_root is None):
+            raise AtlasError("baking a chunk needs a backend and a models root")
+        previous = published_chunk(out_dir)
+    except Exception as exc:
+        emit("error", str(exc) if isinstance(exc, AtlasError) else f"{type(exc).__name__}: {exc}")
+        raise
 
     def keep_previous() -> None:
         # A re-run that fails before a new bake is recorded must not unpublish the crop (and

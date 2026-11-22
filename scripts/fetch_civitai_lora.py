@@ -61,17 +61,27 @@ def model_id(arg: str) -> int:
     return int(m.group(1))
 
 
+def _origin(url: str) -> tuple[str, str | None, int | None]:
+    """(scheme, host, port) of *url*, the port defaulted from the scheme."""
+    parts = urllib.parse.urlsplit(url)
+    scheme = parts.scheme.lower()
+    return scheme, parts.hostname, parts.port or {"https": 443, "http": 80}.get(scheme)
+
+
 class _SameHostAuthRedirect(urllib.request.HTTPRedirectHandler):
-    """Drop ``Authorization`` when a redirect leaves the original host.
+    """Drop ``Authorization`` when a redirect leaves the original origin, or is not HTTPS.
 
     Civitai answers downloads with a 30x to a presigned CDN/object-store URL;
     urllib would otherwise copy the bearer token to that third party (and some
     stores reject a presigned URL that also carries an Authorization header).
+    Scheme and port count too: a same-host redirect to ``http://`` would send the
+    token in cleartext.
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201, PLR0913
         new = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if new is not None and urllib.parse.urlsplit(newurl).hostname != urllib.parse.urlsplit(req.full_url).hostname:
+        target = _origin(newurl)
+        if new is not None and (target[0] != "https" or target != _origin(req.full_url)):
             new.remove_header("Authorization")
         return new
 
@@ -271,6 +281,7 @@ def main() -> None:
     ap.add_argument("--list", action="store_true", help="only print what would be downloaded")
     args = ap.parse_args()
 
+    failed: list[int] = []
     for mid in args.models:
         try:
             model = fetch_json(f"{API}{mid}", args.token)
@@ -297,12 +308,24 @@ def main() -> None:
             raise SystemExit(f"refusing to write {dest}: outside {folder}")
         expected = (f.get("hashes") or {}).get("SHA256")
         if dest.is_file():
-            digest = hashlib.sha256(dest.read_bytes()).hexdigest()
+            h = hashlib.sha256()
+            _hash_existing(dest, h)  # in 1 MiB reads: a LoRA can be gigabytes
+            digest = h.hexdigest()
             if expected and digest.lower() == expected.lower():
                 print(f"    already present: {dest}")
                 continue
         print(f"    -> {dest}")
-        digest = download(f.get("downloadUrl") or version["downloadUrl"], dest, args.token, expected)
+        try:
+            digest = download(f.get("downloadUrl") or version["downloadUrl"], dest, args.token, expected)
+        except SystemExit as exc:  # download reports its failures (HTTP, hash, retries) this way
+            print(f"{mid}: {exc}", file=sys.stderr)
+            failed.append(mid)
+            continue
+        except urllib.error.URLError as exc:  # HTTPError included
+            hint = " (region-blocked: run this somewhere else and rsync)" if getattr(exc, "code", None) == 451 else ""
+            print(f"{mid}: download failed: {exc}{hint}", file=sys.stderr)
+            failed.append(mid)
+            continue
         sidecar = {
             "source": "civitai",
             "model_id": model["id"],
@@ -325,6 +348,8 @@ def main() -> None:
         "(the tree that holds the checkpoint you bake with; atlas resolves one --models-dir)",
         file=sys.stderr,
     )
+    if failed:
+        raise SystemExit(f"{len(failed)} download(s) failed: {', '.join(map(str, failed))}; rerun to resume")
 
 
 if __name__ == "__main__":

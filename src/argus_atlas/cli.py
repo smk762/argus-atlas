@@ -613,12 +613,15 @@ def chunks(
         unknown = [n for n in names if n not in LAYER_PRESETS or LAYER_PRESETS[n].geometry == "point"]
         if unknown:
             raise AtlasError(f"unknown OSM control layer(s) {', '.join(unknown)}")
-        extra = _parse_layers(layer)
-        if dem is not None and not dem.expanduser().is_file():
+        # Expanded once and used everywhere: a literal ~ (--dem=~/x.tif) that only the check expanded
+        # would pass here and fail in GDAL after the block's OSM fetch.
+        dem, out, inputs, land = (p.expanduser() if p is not None else None for p in (dem, out, inputs, land))
+        extra = {name: path.expanduser() for name, path in _parse_layers(layer).items()}
+        if dem is not None and not dem.is_file():
             raise AtlasError(f"DEM not found: {dem}")
         for name, path in extra.items():
             validate_layer_name(name)
-            if not path.expanduser().is_file():
+            if not path.is_file():
                 raise AtlasError(f"layer {name!r} not found: {path}")
         style_dir = out if out is not None else config.jobs_dir() / loaded.name
         plan = plan_block(tiles, record, style_dir, size=size, margin=margin, land=land)

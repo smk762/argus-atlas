@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import BaseModel
 
 from argus_atlas.server import create_app
 from tests.conftest import TEST_BBOX, TEST_LONG_SIDE, requires_gdal
@@ -107,25 +108,67 @@ REQUEST_FIELDS = {
 PATH_PARAMS = {"job_id", "kind"}  # job ids match the safe-id rule; kinds are looked up, never joined as paths
 
 
+def _refs(schema: object) -> set[str]:
+    """Every component a schema points at, at any depth (array items, unions, nested properties)."""
+    if isinstance(schema, dict):
+        found = {schema["$ref"].rsplit("/", 1)[-1]} if isinstance(schema.get("$ref"), str) else set()
+        return found.union(*(_refs(v) for v in schema.values()))
+    if isinstance(schema, list):
+        return set().union(*(_refs(v) for v in schema))
+    return set()
+
+
 def test_no_route_accepts_a_field_nobody_has_reviewed_for_paths() -> None:
     spec = create_app().openapi()
-    bodies = {
-        ref.rsplit("/", 1)[-1]
-        for item in spec["paths"].values()
-        for op in item.values()
-        if (
-            ref := op.get("requestBody", {})
-            .get("content", {})
-            .get("application/json", {})
-            .get("schema", {})
-            .get("$ref")
-        )
-    }
+    components = spec.get("components", {}).get("schemas", {})
+    bodies: set[str] = set()
+    for path, item in spec["paths"].items():
+        for method, op in item.items():
+            # Every content type (JSON, form, multipart), not only application/json: an upload or form
+            # field names files as readily as a JSON one does.
+            for media, content in op.get("requestBody", {}).get("content", {}).items():
+                schema = content.get("schema", {})
+                assert set(schema) == {"$ref"}, f"{method.upper()} {path} {media}: body is not one named model"
+                bodies.add(schema["$ref"].rsplit("/", 1)[-1])
     assert bodies == set(REQUEST_FIELDS)
+    # The models those bodies reach, nested ones included, all need their fields reviewed.
+    reached, todo = set(), set(bodies)
+    while todo:
+        name = todo.pop()
+        reached.add(name)
+        todo |= _refs(components[name]) - reached
+    assert {n for n in reached if "properties" in components[n]} == set(REQUEST_FIELDS)
     for name, fields in REQUEST_FIELDS.items():
-        assert set(spec["components"]["schemas"][name]["properties"]) == fields, name
+        assert set(components[name]["properties"]) == fields, name
     params = {p["name"] for item in spec["paths"].values() for op in item.values() for p in op.get("parameters", [])}
     assert params <= PATH_PARAMS, params - PATH_PARAMS
+
+
+class _Inner(BaseModel):
+    path: str
+
+
+class _Outer(BaseModel):
+    inner: _Inner
+
+
+def test_the_review_guard_sees_form_array_and_nested_bodies() -> None:
+    from fastapi import FastAPI, Form
+
+    app = FastAPI()
+
+    @app.post("/form")
+    def form(name: str = Form(...)) -> None: ...
+
+    @app.post("/many")
+    def many(items: list[_Outer]) -> None: ...
+
+    spec = app.openapi()
+    form_body = spec["paths"]["/form"]["post"]["requestBody"]["content"]
+    assert "application/json" not in form_body  # what the old guard read, and so missed
+    many_body = spec["paths"]["/many"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+    assert set(many_body) != {"$ref"}  # refused as "not one named model"
+    assert _refs(many_body) == {"_Outer"} and _refs(spec["components"]["schemas"]["_Outer"]) == {"_Inner"}
 
 
 def test_every_file_naming_field_is_held_to_its_root(tmp_path: Path) -> None:
@@ -144,8 +187,12 @@ def test_every_file_naming_field_is_held_to_its_root(tmp_path: Path) -> None:
     # Model names never leave the models root either (the bake resolves them through it).
     from argus_atlas.backends.base import make_dir_resolver
 
-    resolve = make_dir_resolver(tmp_path / "models")
-    for name in ("../dem/dem.tif", "/etc/hosts"):
+    models = tmp_path / "models"
+    (models / "checkpoints").mkdir(parents=True)  # a real root, so only containment can refuse a name
+    (models / "checkpoints" / "real.safetensors").write_bytes(b"weights")
+    resolve = make_dir_resolver(models)
+    assert resolve("real.safetensors") == models / "checkpoints" / "real.safetensors"
+    for name in ("../dem/dem.tif", "checkpoints/../../dem/dem.tif", "/etc/hosts", str(dem / "dem.tif")):
         with pytest.raises(FileNotFoundError):
             resolve(name)
 
@@ -172,9 +219,10 @@ def test_place_names_never_reach_the_model(dem: Path, tmp_path: Path, models_dir
     from argus_atlas.labels import LABELS_NAME, label_job
     from argus_atlas.models import BakeParams
 
+    place = "Zqxville Argusmere"  # distinctive, so a match is a leak and never a coincidence
     places = tmp_path / "places.geojson"
     point = {"type": "Point", "coordinates": [10.10, 45.05]}
-    feature = {"type": "Feature", "properties": {"NAME": "Inside", "SCALERANK": 2}, "geometry": point}
+    feature = {"type": "Feature", "properties": {"NAME": place, "SCALERANK": 2}, "geometry": point}
     places.write_text(json.dumps({"type": "FeatureCollection", "features": [feature]}), encoding="utf-8")
     job_dir = tmp_path / "aoi-1"
     build_controls(dem, TEST_BBOX, job_dir, long_side=TEST_LONG_SIDE)
@@ -187,6 +235,10 @@ def test_place_names_never_reach_the_model(dem: Path, tmp_path: Path, models_dir
     assert not {"labels", "places"} & set(sidecar.controls)
     [request] = backend.requests
     assert all(path.name != LABELS_NAME and path.suffix == ".png" for path in request.controls.values())
+    # Nor any text of the request: prompt, negative prompt or anything else it carries.
+    sent = json.dumps(vars(request), default=str)
+    assert request.params.prompt and place not in sent and place.split()[0] not in sent
+    assert place in (job_dir / LABELS_NAME).read_text(encoding="utf-8")  # the name was really there to leak
 
 
 # --- A future geocache fetch calls allow_reuse ---------------------------------------------------------------------

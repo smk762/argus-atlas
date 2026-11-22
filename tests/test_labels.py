@@ -262,3 +262,34 @@ def test_a_grid_change_mid_labelling_leaves_the_files_alone(
         labels.label_job(job_dir, ne_places, zoom=5)
     assert ((job_dir / labels.LABELS_NAME).read_bytes(), (job_dir / "labels.json").read_bytes()) == before
     assert not list(job_dir.glob(".labels-stage-*"))
+
+
+@requires_gdal
+def test_a_save_in_the_relabel_window_is_not_lost(
+    job: tuple[Path, JobSidecar], ne_places: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+    import time
+
+    job_dir, _ = job
+    real_load = labels.load_sidecar
+    loads: list[int] = []
+    racers: list[threading.Thread] = []
+
+    def bake_saves() -> None:  # a bake/tiles run writing job.json while labels re-reads it
+        fresh = real_load(job_dir)
+        save_sidecar(job_dir, fresh.model_copy(update={"timings": {**fresh.timings, "bake": 1.5}}))
+
+    def load_and_race(path: Path) -> JobSidecar:
+        sidecar = real_load(path)
+        loads.append(1)
+        if len(loads) == 2:  # the re-read just before job.json is written
+            racers.append(threading.Thread(target=bake_saves))
+            racers[0].start()
+            time.sleep(0.3)  # without the lock the racer's save lands now, then is overwritten
+        return sidecar
+
+    monkeypatch.setattr(labels, "load_sidecar", load_and_race)
+    labels.label_job(job_dir, ne_places, zoom=6)
+    racers[0].join(5)
+    assert load_sidecar(job_dir).timings.get("bake") == 1.5

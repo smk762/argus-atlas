@@ -212,3 +212,59 @@ def test_ascii_grid_nodata_reads_as_no_land(tmp_path: Path) -> None:
         "ncols 3\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\nNODATA_value -9999\n1 -9999 0\n-9999 -9999 1\n"
     )
     assert _read_ascii_grid(asc) == [[1, 0, 0], [0, 0, 1]]
+
+
+def test_ascii_grid_nan_nodata_keeps_every_row(tmp_path: Path) -> None:
+    from argus_atlas.blocks import _read_ascii_grid
+
+    asc = tmp_path / "g.asc"
+    asc.write_text(
+        "ncols 3\nnrows 3\nxllcenter 0\nyllcenter 0\ncellsize 1\nNODATA_value nan\n1 nan 0\nnan nan 1\ninf 1 -inf\n"
+    )
+    assert _read_ascii_grid(asc) == [[1, 0, 0], [0, 0, 1], [0, 1, 0]]
+
+
+def test_cli_chunks_expands_a_literal_tilde_everywhere(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_atlas import blocks
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "dem.tif").write_bytes(b"tif")
+    (tmp_path / "water.geojson").write_text("{}")
+    recipe = tmp_path / "antique.json"
+    recipe.write_text(json.dumps({"name": "antique", "preset": "antique", "checkpoint": "sd_xl_base_1.0.safetensors"}))
+    seen: dict = {}
+
+    def plan(tiles, record, style_dir, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        seen["style"] = style_dir
+        bbox = mercator_to_bbox(*tile_bounds(Z, X0, Y0))
+        return blocks.BlockPlan(
+            recipe="antique", zoom=Z, size=SIZE, margin=MARGIN, native_zoom=Z, bbox=bbox, tiles=[f"{Z}/{X0}/{Y0}"]
+        )
+
+    def run(plan, record, out_dir, *, dem, layers, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        seen.update(dem=dem, layers=layers)
+        return []
+
+    monkeypatch.setattr(blocks, "plan_block", plan)
+    monkeypatch.setattr(blocks, "run_block", run)
+    result = runner.invoke(
+        app,
+        [
+            "chunks",
+            "--tile",
+            f"{Z}/{X0}/{Y0}",
+            "--controls-only",
+            "--recipe",
+            str(recipe),
+            "--osm-layers",
+            "",
+            "--dem=~/dem.tif",
+            "--layer",
+            "water=~/water.geojson",
+            "--out",
+            "~/style",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert seen["dem"] == tmp_path / "dem.tif" and seen["layers"] == {"water": tmp_path / "water.geojson"}
+    assert seen["style"] == tmp_path / "style"

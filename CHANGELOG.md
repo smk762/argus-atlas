@@ -4,6 +4,10 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 
 ## [Unreleased]
 
+### Changed
+
+- **The docs opsec gate no longer names the suite's machines in its own source**: `tests/test_rules.py` reads the private names only from `OPSEC_DENYLIST` (the environment, the Actions secret of the same name, or an untracked `.opsec-denylist` file), matched as whole words, case-insensitively. Unconfigured, the name check is skipped with one notice; the IP, path and email checks always run.
+
 ## [0.4.1] - 2026-11-20
 
 ### Changed

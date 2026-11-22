@@ -45,8 +45,11 @@ def test_no_gdal_wheel_or_rasterio_is_a_dependency() -> None:
 # --- docs/ has no machine names, host paths, LAN addresses or emails -------------------------------------------
 
 # Studio and Realms import docs/ verbatim, and README/CHANGELOG are published on PyPI and GitHub Releases. The same
-# gate as their importers: private IPs, home and mount paths, emails, the suite's GPU hosts, plus any private names
-# in OPSEC_DENYLIST (comma- or newline-separated; CI fills it from a secret, so the list itself stays out of git).
+# gate as their importers: private IPs, home and mount paths, emails, plus the private names (the suite's GPU hosts and
+# the like) in OPSEC_DENYLIST. The names are never committed, not even in this gate: CI fills OPSEC_DENYLIST from the
+# Actions secret of the same name, and a local run reads it from the environment or the untracked `.opsec-denylist`
+# file (gitignored). Comma- or newline-separated, matched case-insensitively as whole words. With neither set, the
+# name check is skipped (with one notice) and the other checks still run.
 OPSEC_FILES = sorted({*ROOT.glob("docs/**/*.md"), ROOT / "README.md", ROOT / "CHANGELOG.md", ROOT / ".env.example"})
 OPSEC_PATTERNS = {
     "private IPv4": re.compile(
@@ -54,27 +57,51 @@ OPSEC_PATTERNS = {
     ),
     "home or mount path": re.compile(r"(?:/home/|/Users/|/root/|/mnt/|/media/|[A-Z]:\\Users\\)[\w.-]+"),
     "email": re.compile(r"\b[\w.%+-]+@(?!example\.(?:com|org)\b)[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}\b"),
-    "machine name": re.compile(r"\b(?:morpheus|jarrah|dragon)\b", re.IGNORECASE),
 }
 ALLOWED_EMAILS = {"noreply@anthropic.com"}
+OPSEC_DENYLIST_FILE = ROOT / ".opsec-denylist"
 
 
-def _denylist() -> list[str]:
+def _denylist(file: Path | None = None) -> list[str]:
+    file = OPSEC_DENYLIST_FILE if file is None else file
     raw = os.environ.get("OPSEC_DENYLIST", "")
+    if file.is_file():
+        raw += "\n" + file.read_text(encoding="utf-8")
     return [term.strip() for term in re.split(r"[,\n]", raw) if term.strip()]
 
 
-@pytest.mark.parametrize("path", OPSEC_FILES, ids=lambda p: str(p.relative_to(ROOT)))
-def test_published_docs_pass_the_opsec_gate(path: Path) -> None:
-    text = path.read_text(encoding="utf-8")
+def _denylist_pattern(terms: list[str]) -> re.Pattern[str] | None:
+    """Every term as a whole word, case-insensitively; None when there are none."""
+    if not terms:
+        return None
+    alternatives = "|".join(re.escape(term) for term in sorted(set(terms), key=len, reverse=True))
+    return re.compile(rf"(?<!\w)(?:{alternatives})(?!\w)", re.IGNORECASE)
+
+
+def _opsec_findings(text: str, terms: list[str]) -> list[str]:
     found = [
         f"{label}: {m.group(0)!r}"
         for label, pattern in OPSEC_PATTERNS.items()
         for m in pattern.finditer(text)
         if not (label == "email" and m.group(0).lower() in ALLOWED_EMAILS)
     ]
-    lowered = text.lower()
-    found += ["OPSEC_DENYLIST term" for term in _denylist() if term.lower() in lowered]  # never echo a secret term
+    denied = _denylist_pattern(terms)
+    hits = {m.group(0).lower() for m in denied.finditer(text)} if denied else set()
+    found += ["OPSEC_DENYLIST term"] * len(hits)  # one per term found, never echoing it
+    return found
+
+
+def test_the_opsec_denylist_is_configured() -> None:
+    """The one notice that the machine-name check is off: skipped, never failed, so a fork's PR (no secrets) passes."""
+    if not _denylist():
+        pytest.skip(
+            "OPSEC_DENYLIST is not configured (env, Actions secret or .opsec-denylist): machine names unchecked"
+        )
+
+
+@pytest.mark.parametrize("path", OPSEC_FILES, ids=lambda p: str(p.relative_to(ROOT)))
+def test_published_docs_pass_the_opsec_gate(path: Path) -> None:
+    found = _opsec_findings(path.read_text(encoding="utf-8"), _denylist())
     assert not found, f"{path.relative_to(ROOT)}: {found}"
 
 
@@ -82,12 +109,44 @@ def test_the_opsec_gate_catches_what_it_is_for() -> None:
     hits = {
         label
         for label, pattern in OPSEC_PATTERNS.items()
-        for sample in ("http://192.168.1.20:8188", "/home/someone/models", "ops@corp.io", "ssh morpheus")
+        for sample in ("http://192.168.1.20:8188", "/home/someone/models", "ops@corp.io")
         if pattern.search(sample)
     }
     assert hits == set(OPSEC_PATTERNS)
-    clean = "http://<GPU_HOST>:8188 dragonhound.dev here be dragons 127.0.0.1 /data/models user@example.com"
+    clean = "http://<GPU_HOST>:8188 dragonhound.dev 127.0.0.1 /data/models user@example.com"
     assert not any(pattern.search(clean) for pattern in OPSEC_PATTERNS.values())
+
+
+# Obviously fake names: the real ones live only in the secret.
+FAKE_TERMS = ["examplehost", "Other-Box"]
+
+
+def test_the_denylist_matches_whole_words_case_insensitively_and_never_echoes_a_term() -> None:
+    for text in ("ssh examplehost", "http://EXAMPLEHOST:8188/", "on examplehost.", "via other-box today"):
+        assert _opsec_findings(text, FAKE_TERMS) == ["OPSEC_DENYLIST term"], text
+    for text in ("examplehosts", "myexamplehost", "examplehost_2", "other-boxes", "another-box"):
+        assert _opsec_findings(text, FAKE_TERMS) == [], text  # a term inside a longer word is not that name
+    assert not any("examplehost" in f.lower() for f in _opsec_findings("examplehost", FAKE_TERMS))
+    assert _opsec_findings("examplehost, EXAMPLEHOST", FAKE_TERMS) == ["OPSEC_DENYLIST term"]  # per term, not per hit
+
+
+def test_the_denylist_comes_from_the_env_and_the_untracked_file(tmp_path: Path, monkeypatch) -> None:
+    missing = tmp_path / "absent"
+    monkeypatch.delenv("OPSEC_DENYLIST", raising=False)
+    assert _denylist(missing) == []
+    assert _opsec_findings("ssh examplehost from 127.0.0.1", _denylist(missing)) == []  # unconfigured: skipped
+    assert _opsec_findings("ssh examplehost at 10.0.0.5", _denylist(missing)) == ["private IPv4: '10.0.0.5'"]
+
+    monkeypatch.setenv("OPSEC_DENYLIST", " examplehost ,\nOther-Box\n")
+    assert _denylist(missing) == ["examplehost", "Other-Box"]
+    file = tmp_path / ".opsec-denylist"
+    file.write_text("filehost\n", encoding="utf-8")
+    assert _denylist(file) == ["examplehost", "Other-Box", "filehost"]
+
+
+def test_the_denylist_file_is_never_committed() -> None:
+    ignored = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert OPSEC_DENYLIST_FILE.name in ignored or f"/{OPSEC_DENYLIST_FILE.name}" in ignored
 
 
 # --- No route takes a filesystem path ----------------------------------------------------------------------------

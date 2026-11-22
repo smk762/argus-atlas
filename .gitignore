@@ -22,3 +22,6 @@ output/
 !data/jobs/
 data/*/*
 !data/*/.gitkeep
+
+# Private names for the docs opsec gate (tests/test_rules.py); CI uses the OPSEC_DENYLIST secret. Never commit.
+.opsec-denylist

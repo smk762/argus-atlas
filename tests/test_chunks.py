@@ -511,3 +511,45 @@ def test_a_neighbours_crop_must_sit_in_its_job_dir(tmp_path: Path) -> None:
         job.write_text(json.dumps(data))
         with pytest.raises(AtlasError, match="outside the job directory"):
             find_neighbours(root, "antique", probe)
+
+
+@requires_gdal
+def test_a_failed_seam_rerun_drops_the_deleted_seam_controls(
+    dem: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from argus_atlas.chunks import SEAM_INIT_KIND, SEAM_MASK_KIND, build_seams
+
+    job_dir = tmp_path / "antique-14-8650-5890"
+    sidecar = run_chunk(dem, A, RECIPE, job_dir, size=SIZE, margin=MARGIN, controls_only=True)
+    assert SEAM_INIT_KIND in sidecar.controls and SEAM_MASK_KIND in sidecar.controls
+
+    def boom(argv, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        raise gdal_ops.GdalError("gdal fell over")
+
+    monkeypatch.setattr(gdal_ops, "run", boom)
+    with pytest.raises(gdal_ops.GdalError):
+        build_seams(job_dir, sidecar, [])
+    saved = load_sidecar(job_dir)
+    assert SEAM_INIT_KIND not in saved.controls and SEAM_MASK_KIND not in saved.controls
+    assert all((job_dir / ref.path).is_file() for ref in saved.controls.values())
+
+
+@requires_gdal
+def test_seams_of_a_relative_job_dir_land_in_it(dem: Path, tmp_path: Path, models_dir: Path, monkeypatch) -> None:  # noqa: ANN001
+    _chunk(dem, tmp_path, A, models_dir)
+    monkeypatch.chdir(tmp_path)
+    b = run_chunk(dem, B, RECIPE, Path("antique-14-8651-5890"), size=SIZE, margin=MARGIN, controls_only=True)
+    assert b.chunk is not None and len(b.chunk.neighbours) == 1
+    assert _stats(tmp_path / "antique-14-8651-5890" / "seam_mask.png")[0]["minimum"] == 0
+
+
+def test_an_invalid_chunk_ends_the_stream_with_an_error_frame(tmp_path: Path) -> None:
+    events = []
+    with pytest.raises(AtlasError):
+        run_chunk(
+            tmp_path / "dem.tif", "not/a/tile", RECIPE, tmp_path / "job", controls_only=True, progress=events.append
+        )
+    assert [e.type for e in events] == ["error"]
+    with pytest.raises(AtlasError, match="backend"):
+        run_chunk(tmp_path / "dem.tif", A, RECIPE, tmp_path / "job", size=SIZE, margin=MARGIN, progress=events.append)
+    assert [e.type for e in events] == ["error", "error"]

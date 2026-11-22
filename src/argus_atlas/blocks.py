@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -102,19 +103,29 @@ def block(
     return ordered, mercator_to_bbox(xmin, ymin, xmax, ymax)
 
 
+_AAIGRID_HEADERS = frozenset(
+    {"ncols", "nrows", "xllcorner", "xllcenter", "yllcorner", "yllcenter", "cellsize", "nodata_value", "dx", "dy"}
+)
+
+
 def _read_ascii_grid(path: Path) -> list[list[int]]:
-    """The cells of an AAIGrid; a ``NODATA_value`` cell reads as 0 (no land), never as its sentinel."""
+    """The cells of an AAIGrid; a ``NODATA_value`` cell reads as 0 (no land), never as its sentinel.
+
+    Only the AAIGrid header keywords are headers, so a data row starting with ``nan`` is a row.
+    A non-finite cell (a ``nan`` NODATA_value never equals itself) reads as 0 too.
+    """
     rows = []
     nodata: float | None = None
     for line in path.read_text(encoding="ascii").splitlines():
         parts = line.split()
         if not parts:
             continue
-        if parts[0][0].isalpha():
+        if parts[0].lower() in _AAIGRID_HEADERS:
             if parts[0].lower() == "nodata_value" and len(parts) > 1:
                 nodata = float(parts[1])
             continue
-        rows.append([0 if nodata is not None and float(v) == nodata else int(float(v)) for v in parts])
+        cells = [float(v) for v in parts]
+        rows.append([0 if not math.isfinite(c) or c == nodata else int(c) for c in cells])
     return rows
 
 

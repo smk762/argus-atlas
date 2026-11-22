@@ -390,3 +390,78 @@ def test_an_unexpected_bake_failure_ends_the_stream_with_an_error_frame(
     # the claim was released: another bake of the job is not refused as busy
     with c.stream("POST", "/bake/stream", json={"job_id": "crash", "checkpoint": "c"}) as resp:
         assert resp.status_code == 200
+
+
+def test_controls_rechecks_the_id_once_claimed(roots: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    import argus_atlas.controls
+    from argus_atlas import gdal_ops
+
+    _seed_job(roots["jobs"], "taken")
+    (roots["dem"] / "dem.tif").write_bytes(b"x")
+    real_exists = JobStore.exists
+    checks: list[str] = []
+
+    def exists(self: JobStore, job_id: str) -> bool:  # the first check ran before the other request wrote job.json
+        checks.append(job_id)
+        return False if len(checks) == 1 else real_exists(self, job_id)
+
+    built: list[str] = []
+    monkeypatch.setattr(JobStore, "exists", exists)
+    monkeypatch.setattr(gdal_ops, "require_gdal", lambda: None)
+    monkeypatch.setattr(argus_atlas.controls, "build_controls", lambda *a, **k: built.append("over it"))
+    c = TestClient(create_app(jobs_dir=roots["jobs"], dem_dir=roots["dem"], models_dir=roots["models"]))
+    resp = c.post("/controls", json={"dem": "dem.tif", "bbox": "10,45,10.1,45.05", "job_id": "taken"})
+    assert resp.status_code == 409 and "already exists" in resp.json()["detail"]
+    assert built == []
+
+
+def _purge_on_first_load(monkeypatch: pytest.MonkeyPatch, c: TestClient) -> list[int]:
+    """Patch JobStore.load so a purge of the job runs right after its first read."""
+    import threading
+
+    real_load = JobStore.load
+    purges: list[int] = []
+
+    def load(self: JobStore, job_id: str) -> JobSidecar:
+        sidecar = real_load(self, job_id)
+        if not purges:
+            t = threading.Thread(target=lambda: purges.append(c.post(f"/purge/{job_id}", json=CONFIRM).status_code))
+            t.start()
+            t.join(10)
+        return sidecar
+
+    monkeypatch.setattr(JobStore, "load", load)
+    return purges
+
+
+def test_bake_never_runs_on_a_job_purged_before_its_claim(
+    roots: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import argus_atlas.bake
+
+    _seed_job(roots["jobs"], "gone")
+    baked: list[str] = []
+    monkeypatch.setattr(argus_atlas.bake, "run_bake", lambda *a, **k: baked.append("ran"))
+    c = TestClient(
+        create_app(
+            jobs_dir=roots["jobs"],
+            dem_dir=roots["dem"],
+            models_dir=roots["models"],
+            allow_bake=True,
+            allow_delete=True,
+            backend_factory=FakeBackend,
+        )
+    )
+    purges = _purge_on_first_load(monkeypatch, c)
+    resp = c.post("/bake/stream", json={"job_id": "gone", "checkpoint": "c"})
+    assert purges == [200] and resp.status_code == 404 and baked == []
+    assert not (roots["jobs"] / "gone").exists()
+    assert c.post("/bake/stream", json={"job_id": "gone", "checkpoint": "c"}).status_code == 404  # claim released
+
+
+def test_tiles_reads_the_job_only_once_claimed(roots: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_job(roots["jobs"], "kept")
+    c = _deleting(roots)
+    purges = _purge_on_first_load(monkeypatch, c)
+    assert c.post("/tiles", json={"job_id": "kept"}).status_code == 409  # not baked
+    assert purges == [409] and (roots["jobs"] / "kept" / "job.json").is_file()

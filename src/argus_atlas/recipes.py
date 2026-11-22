@@ -13,6 +13,7 @@ its name into the bake params, so every output says which style made it.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.resources
 import json
@@ -78,7 +79,10 @@ def load_recipe(ref: str | Path, *, recipes_root: Path | None = None, allow_path
     A name is confined to *recipes_root*: no separators, no ``..``, and the resolved file must sit
     inside the root. Errors never quote the file's contents.
     """
-    path = Path(ref).expanduser()
+    path = Path(ref)
+    if allow_path:  # only a path is expanded: a name like "~nosuchuser" is just refused below
+        with contextlib.suppress(RuntimeError):  # ~user with no such user: try it as the literal path it is
+            path = path.expanduser()
     if not (allow_path and path.is_file()):
         name = str(ref)
         if recipes_root is None or not is_safe_id(name) or name.endswith(RECIPE_SUFFIX):

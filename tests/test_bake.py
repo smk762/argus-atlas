@@ -180,6 +180,6 @@ def test_model_resolver_follows_a_symlink_the_operator_placed_under_the_root(tmp
     resolve = make_dir_resolver(root)
     assert resolve("juggernaut.safetensors") == root / "checkpoints" / "juggernaut.safetensors"
     assert resolve("loras/juggernaut.safetensors") == root / "loras" / "juggernaut.safetensors"
-    for escape in ("../fast/juggernaut.safetensors", str(store / "juggernaut.safetensors")):
+    for escape in ("../fast/juggernaut.safetensors", str(store / "juggernaut.safetensors"), ".", "./", "loras/."):
         with pytest.raises(FileNotFoundError):
             resolve(escape)

@@ -126,8 +126,13 @@ def plan_grid(
             raise AtlasError(f"resolution must be positive metres per pixel, got {resolution}")
         res = float(resolution)
 
-    width = _ceil_multiple(w_m / res)
-    height = _ceil_multiple(h_m / res)
+    px_w, px_h = w_m / res, h_m / res
+    if not (math.isfinite(px_w) and math.isfinite(px_h)):  # e.g. 1e-320 m/px: math.ceil would overflow
+        raise AtlasError(
+            f"resolution {res:g} m/px is too fine: the AOI needs an unbounded canvas, over the {max_long_side} px cap"
+        )
+    width = _ceil_multiple(px_w)
+    height = _ceil_multiple(px_h)
     if max(width, height) > max_long_side:
         fit_m = max_long_side * res
         cx, cy = (xmin + xmax) / 2, (ymin + ymax) / 2

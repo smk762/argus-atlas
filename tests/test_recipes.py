@@ -42,6 +42,11 @@ def test_load_by_path_and_by_name(tmp_path: Path) -> None:
         load_recipe("../antique", recipes_root=tmp_path)
     with pytest.raises(AtlasError, match="recipe file not found"):
         load_recipe("../antique", recipes_root=tmp_path, allow_path=True)
+    for name in ("~nosuchuser-atlas", "~nosuchuser-atlas/antique.json"):  # never expanded as a name
+        with pytest.raises(AtlasError, match="no recipe named"):
+            load_recipe(name, recipes_root=tmp_path)
+        with pytest.raises(AtlasError, match="recipe file not found"):
+            load_recipe(name, recipes_root=tmp_path, allow_path=True)
 
 
 def test_bad_recipes_fail_on_load(tmp_path: Path) -> None:

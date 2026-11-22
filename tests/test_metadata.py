@@ -129,3 +129,19 @@ def test_the_payload_is_json_all_the_way_down(tmp_path: Path) -> None:
     payload = _payload(tmp_path)
     assert json.loads(metadata.payload_json(payload)) == payload
     assert payload["checkpoint"] == {"name": "ck.safetensors", "sha256": "a" * 64} and payload["lora"] is None
+
+
+@pytest.mark.parametrize(("description", "software"), [('{"a":12}', "argus"), ('{"a":1}', "sw-1"), ("x" * 9, "y" * 9)])
+def test_exif_offsets_are_word_aligned(description: str, software: str) -> None:
+    import struct
+
+    blob = metadata.build_exif(description, software=software)
+    (ifd0,) = struct.unpack("<I", blob[4:8])
+    entries = [struct.unpack("<HHII", blob[ifd0 + 2 + 12 * i : ifd0 + 14 + 12 * i]) for i in range(3)]
+    exif_ifd = next(value for tag, _, _, value in entries if tag == 0x8769)
+    offsets = [value for _, _, count, value in entries if count > 4] + [exif_ifd]
+    _, _, count, comment = struct.unpack("<HHII", blob[exif_ifd + 2 : exif_ifd + 14])
+    assert all(off % 2 == 0 for off in [ifd0, *offsets, comment]), offsets
+    assert [c for t, _, c, _ in entries if t == 0x010E] == [len(description) + 1]  # counts stay unpadded
+    assert metadata.parse_exif_description(blob) == description
+    assert blob[comment : comment + count].endswith(description.encode())

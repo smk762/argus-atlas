@@ -82,7 +82,7 @@ def test_the_opsec_gate_catches_what_it_is_for() -> None:
     hits = {
         label
         for label, pattern in OPSEC_PATTERNS.items()
-        for sample in ("http://192.168.1.20:8188", "/home/someone/models", "ops@corp.io", "ssh morpheus")
+        for sample in ("http://192.168.200.20:8188", "/home/someone/models", "ops@corp.io", "ssh morpheus")
         if pattern.search(sample)
     }
     assert hits == set(OPSEC_PATTERNS)

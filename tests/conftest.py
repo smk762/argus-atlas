@@ -36,10 +36,14 @@ TEST_LONG_SIDE = 256
 def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin every ATLAS_* knob off so an operator shell can't flip the defaults under test.
 
-    ARGUS_GPU_COORDINATOR too: a host set to ``broker`` would otherwise send the ComfyUI tests to iris.
+    ARGUS_GPU_* too: a host set to the broker (``ARGUS_GPU_BROKER_URL`` alone selects it) would otherwise send the
+    ComfyUI tests to iris.
     """
     for name in (
         "ARGUS_GPU_COORDINATOR",
+        "ARGUS_GPU_BROKER_URL",
+        "ARGUS_GPU_TENANT",
+        "ARGUS_GPU_TENANT_MANIFEST",
         "ATLAS_GPU_PRIORITY",
         "ATLAS_ALLOW_BAKE",
         "ATLAS_JOBS_DIR",

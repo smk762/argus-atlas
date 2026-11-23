@@ -11,8 +11,11 @@ The lease covers the ComfyUI round trip only: controls, the gate, the crop and t
 When the grant names a ComfyUI (``base_url``), the prompt goes there; ``None`` means atlas's own ``COMFYUI_BASE_URL``.
 
 The coordinator comes from the host-wide ``ARGUS_GPU_*`` environment (:func:`argus_cortex.gpu.coordinator_from_env`):
-unset is ``none``, no gating, which is how atlas ran before. ``broker`` falls back to ``ARGUS_GPU_BROKER_FALLBACK``
-(``lease`` by default) when iris cannot be reached.
+``ARGUS_GPU_BROKER_URL`` (and ``ARGUS_GPU_BROKER_TOKEN``) alone selects the broker, with the tenant and its kinds read
+from ``gpu-tenant.yaml`` in the working directory or ``/app``; with no URL it is ``none``, no gating, which is how atlas
+ran before. The broker falls back to ``ARGUS_GPU_BROKER_FALLBACK`` (``lease`` by default) when iris cannot be reached.
+The server registers atlas with the broker at startup (:func:`keep_registered`), so iris knows the tenant before its
+first bake; the CLI registers with its first lease.
 
 :data:`BAKE` is the figure declared in ``gpu-tenant.yaml``; ``tests/test_gpu.py`` keeps the two in step. The broker
 uses its learned p95 per kind when that is larger. A refused or timed-out lease, or a broker error, is a
@@ -23,9 +26,12 @@ from __future__ import annotations
 
 import contextlib
 import os
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import get_args
 
+import structlog
+from argus_cortex import gpu as cortex_gpu
 from argus_cortex.gpu import GpuCoordinator, GpuLease, GpuLeaseRefused, GpuLeaseTimeout, coordinator_from_env
 from argus_cortex.gpu_broker import BrokerError
 from argus_cortex.gpu_wire import GpuConstraints, PriorityClass
@@ -38,6 +44,8 @@ DEFAULT_PRIORITY: PriorityClass = "batch"
 # The class atlas's leases ask for, when set: `background` queues a long re-bake behind everything else, so it runs
 # only on capacity nobody else wants (with the broker in `admission: enforce`; in `observe` every lease is granted).
 ENV_PRIORITY = "ATLAS_GPU_PRIORITY"
+
+logger = structlog.get_logger()
 
 LEASE_ERRORS: tuple[type[Exception], ...] = (GpuLeaseRefused, GpuLeaseTimeout, BrokerError)
 
@@ -61,6 +69,27 @@ def default_coordinator() -> GpuCoordinator:
         return coordinator_from_env()
     except ValueError as exc:
         raise BackendError(str(exc)) from exc
+
+
+@contextlib.asynccontextmanager
+async def keep_registered(coordinator: GpuCoordinator | None = None) -> AsyncIterator[None]:
+    """Keep atlas registered with the GPU broker for the body (the server's lifetime), and sign off at the end.
+
+    *coordinator* defaults to :func:`default_coordinator`. A no-op for the local coordinators; it never blocks startup
+    on the broker, and an unusable ``ARGUS_GPU_*`` environment is logged here and left for ``doctor`` and the first bake
+    to report, so the server still starts.
+    """
+    if coordinator is None:
+        try:
+            coordinator = default_coordinator()
+        except BackendError as exc:
+            logger.warning("gpu.register_skipped", error=str(exc))
+            coordinator = None
+    if coordinator is None:
+        yield
+        return
+    async with cortex_gpu.aregistered(coordinator):
+        yield
 
 
 def priority_from_env() -> PriorityClass:

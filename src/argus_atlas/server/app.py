@@ -36,8 +36,8 @@ import json
 import secrets
 import shutil
 import threading
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
 try:
@@ -51,7 +51,7 @@ import structlog
 from argus_cortex.server import WriteGuard
 from pydantic import BaseModel, Field, field_validator
 
-from argus_atlas import __version__, config, gdal_ops
+from argus_atlas import __version__, config, gdal_ops, gpu
 from argus_atlas.backends.base import BackendError, BakeBackend
 from argus_atlas.jobs import JobStore, is_safe_id, new_job_id
 from argus_atlas.models import (
@@ -170,6 +170,7 @@ def create_app(
     allow_delete: bool | None = None,
     backend_factory=None,  # noqa: ANN001 - Callable[[], BakeBackend]; None = backend_from_env
     osm_fetcher=None,  # noqa: ANN001 - Callable[[str, str], bytes]; None = Overpass over HTTP (tests inject one)
+    gpu_coordinator=None,  # noqa: ANN001 - GpuCoordinator registered at startup; None = the ARGUS_GPU_* environment
 ) -> FastAPI:
     """Build the app. Omitted arguments fall back to the ``ATLAS_*`` environment.
 
@@ -184,10 +185,18 @@ def create_app(
     models_root = config.models_dir(models_dir)
     store = JobStore(jobs_root)
 
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # Registers atlas's tenant manifest with the GPU broker (argus-iris) now rather than at the first bake, and
+        # signs off at shutdown. Nothing without ARGUS_GPU_BROKER_URL; never blocks startup on the broker.
+        async with gpu.keep_registered(gpu_coordinator):
+            yield
+
     app = FastAPI(
         title="Argus Atlas",
         description="Georeferenced fantasy-map overlays from real terrain: DEM in, PMTiles out.",
         version=__version__,
+        lifespan=lifespan,
     )
 
     if not (allow_bake and allow_osm and allow_delete):

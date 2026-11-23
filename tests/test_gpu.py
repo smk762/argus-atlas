@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 import contextlib
+import json
+import time
 from pathlib import Path
 
+import httpx
 import pytest
 from argus_cortex.gpu import GpuLease, GpuLeaseRefused, GpuLeaseTimeout, NullCoordinator
-from argus_cortex.gpu_broker import BrokerError
+from argus_cortex.gpu_broker import BrokerCoordinator, BrokerError
 from argus_cortex.gpu_wire import load_tenant_manifest
+from fastapi.testclient import TestClient
 
 from argus_atlas import gpu
 from argus_atlas.backends.base import BackendError, BakeRequest
 from argus_atlas.backends.comfyui import ComfyUIBackend
 from argus_atlas.backends.workflow import example_template
 from argus_atlas.png import write_png
+from argus_atlas.server import create_app
 from tests.conftest import requires_gdal
 from tests.fakebackend import FakeBackend
 from tests.test_comfyui import GRID, PARAMS, FakeTransport
@@ -286,3 +291,78 @@ def test_run_block_paints_every_chunk_under_one_session(dem: Path, tmp_path: Pat
     assert len(baked) == 2 and len(backend.requests) == 2
     assert backend.sessions == ["chunks:antique"]
     assert len(coordinator.calls) == 1 and coordinator.exits == [None]
+
+
+# --- registration at startup ---------------------------------------------------------------------------------
+
+
+class FakeBroker:
+    """Answers the broker's tenant routes and records what reached them."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.manifests: list[dict] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.calls.append((request.method, request.url.path))
+        if request.method == "POST" and request.url.path == "/tenants":
+            self.manifests.append(json.loads(request.content))
+            return httpx.Response(200, json={"tenant": "argus-atlas"})
+        if request.method == "DELETE" and request.url.path == "/tenants/argus-atlas":
+            return httpx.Response(204)
+        return httpx.Response(404)
+
+
+def _wait_for(predicate, timeout_s: float = 5.0) -> None:  # noqa: ANN001
+    deadline = time.monotonic() + timeout_s
+    while not predicate():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.01)
+
+
+def test_the_broker_url_alone_selects_the_broker_with_the_committed_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(MANIFEST.parent)  # where argus-cortex looks first; the image's is /app/gpu-tenant.yaml
+    monkeypatch.setenv("ARGUS_GPU_BROKER_URL", "http://broker.invalid:8120")
+    coordinator = gpu.default_coordinator()
+    assert coordinator.name == "broker"
+    assert coordinator.tenant == gpu.TENANT
+    assert coordinator.manifest == load_tenant_manifest(MANIFEST)
+
+
+def test_the_server_registers_at_startup_and_signs_off_at_shutdown(tmp_path: Path) -> None:
+    broker = FakeBroker()
+    coordinator = BrokerCoordinator(
+        "http://broker.invalid:8120",
+        tenant=gpu.TENANT,
+        manifest=load_tenant_manifest(MANIFEST),
+        async_transport=httpx.MockTransport(broker),
+        detect_container=False,
+    )
+    with TestClient(create_app(jobs_dir=tmp_path, gpu_coordinator=coordinator)) as client:
+        _wait_for(lambda: ("POST", "/tenants") in broker.calls)
+        assert client.get("/health").status_code == 200
+    assert broker.calls[-1] == ("DELETE", "/tenants/argus-atlas")
+    assert broker.manifests[0]["tenant"] == gpu.TENANT
+    assert [k["kind"] for k in broker.manifests[0]["kinds"]] == [gpu.BAKE.kind]
+
+
+def test_a_down_broker_or_a_bad_environment_never_stops_the_server_starting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def down(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    coordinator = BrokerCoordinator(
+        "http://broker.invalid:8120",
+        tenant=gpu.TENANT,
+        async_transport=httpx.MockTransport(down),
+        detect_container=False,
+    )
+    with TestClient(create_app(jobs_dir=tmp_path, gpu_coordinator=coordinator)) as client:
+        assert client.get("/health").status_code == 200
+
+    monkeypatch.setenv("ARGUS_GPU_COORDINATOR", "sometimes")
+    with TestClient(create_app(jobs_dir=tmp_path)) as client:
+        assert client.get("/health").status_code == 200

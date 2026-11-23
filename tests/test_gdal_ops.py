@@ -72,6 +72,17 @@ def test_a_wrapped_geographic_crs_is_still_in_degrees(monkeypatch: pytest.Monkey
     assert not gdal_ops.is_geographic(COMPOUND_FEET_WKT)
 
 
+def test_deeply_nested_wkt_is_unparseable() -> None:
+    modest = "Z"
+    for _ in range(8):
+        modest = f"N[{modest}]"
+    assert gdal_ops._parse_wkt(modest) is not None
+    wkt = "Z"
+    for _ in range(80):
+        wkt = f"N[{wkt}]"
+    assert gdal_ops._parse_wkt(wkt) is None
+
+
 def test_gdalinfo_stats_never_writes_or_reads_an_aux_xml(monkeypatch: pytest.MonkeyPatch) -> None:
     seen = {}
 

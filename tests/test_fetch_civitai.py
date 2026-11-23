@@ -98,6 +98,71 @@ def test_a_failed_download_skips_to_the_next_model(
     assert "HTTP 403" in capsys.readouterr().err
 
 
+def test_a_metadata_network_error_continues_with_the_next_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import sys
+    import urllib.error
+
+    def fetch(url: str, token: object) -> dict:
+        mid = int(url.rsplit("/", 1)[1])
+        if mid == 1:
+            raise urllib.error.URLError("dns failed")
+        return _model(mid)
+
+    def download(url: str, dest: Path, token: object, expected: object) -> str:
+        dest.write_bytes(b"lora")
+        return "ab" * 32
+
+    monkeypatch.setattr(script, "fetch_json", fetch)
+    monkeypatch.setattr(script, "download", download)
+    monkeypatch.setattr(sys, "argv", ["fetch", "--out", str(tmp_path), "1", "2"])
+    with pytest.raises(SystemExit, match="1 download"):
+        script.main()
+    assert (tmp_path / "loras/sdxl/cartography/model_2/m2.civitai.json").is_file()
+    assert "dns failed" in capsys.readouterr().err
+
+
+def test_a_failed_metadata_lookup_exits_nonzero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import email.message
+    import sys
+    import urllib.error
+
+    def fetch(url: str, token: object) -> dict:
+        raise urllib.error.HTTPError(url, 451, "Unavailable For Legal Reasons", email.message.Message(), None)
+
+    monkeypatch.setattr(script, "fetch_json", fetch)
+    monkeypatch.setattr(sys, "argv", ["fetch", "--out", str(tmp_path), "9"])
+    with pytest.raises(SystemExit, match="1 download"):
+        script.main()
+    err = capsys.readouterr().err
+    assert "HTTP 451" in err and "region-blocked" in err
+    assert not list(tmp_path.rglob("*.safetensors"))
+
+
+def test_a_model_with_no_matching_version_exits_nonzero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    model = {"id": 1, "name": "m", "modelVersions": [{"id": 2, "baseModel": "Pony", "files": []}]}
+    monkeypatch.setattr(script, "fetch_json", lambda url, token: model)
+    monkeypatch.setattr(sys, "argv", ["fetch", "--out", str(tmp_path), "1"])
+    with pytest.raises(SystemExit, match="1 download"):
+        script.main()
+
+
+def test_a_version_without_safetensors_exits_nonzero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    model = _model(4)
+    model["modelVersions"][0]["files"] = [{"name": "weights.pt"}]
+    monkeypatch.setattr(script, "fetch_json", lambda url, token: model)
+    monkeypatch.setattr(sys, "argv", ["fetch", "--out", str(tmp_path), "4"])
+    with pytest.raises(SystemExit, match="1 download"):
+        script.main()
+
+
 def test_an_existing_file_is_hashed_without_reading_it_whole(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import hashlib
     import sys

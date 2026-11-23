@@ -285,9 +285,15 @@ def main() -> None:
     for mid in args.models:
         try:
             model = fetch_json(f"{API}{mid}", args.token)
-        except urllib.error.HTTPError as exc:
-            hint = " (region-blocked: run this somewhere else and rsync)" if exc.code == 451 else ""
-            print(f"{mid}: HTTP {exc.code}{hint}", file=sys.stderr)
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            # URLError covers HTTPError (451 included) and connect/DNS/TLS failures. urllib
+            # usually wraps a timeout as URLError, but a raw TimeoutError or OSError must not
+            # abort the rest of the batch either.
+            code = getattr(exc, "code", None)
+            hint = " (region-blocked: run this somewhere else and rsync)" if code == 451 else ""
+            detail = f"HTTP {code}" if code is not None else str(exc)
+            print(f"{mid}: {detail}{hint}", file=sys.stderr)
+            failed.append(mid)
             continue
         version = pick_version(model, args.base, args.version)
         if args.list:
@@ -295,10 +301,12 @@ def main() -> None:
             continue
         print(describe(model, version))
         if version is None:
+            failed.append(mid)
             continue
         f = primary_file(version)
         if f is None:
             print("    no .safetensors file in that version", file=sys.stderr)
+            failed.append(mid)
             continue
         folder = args.out / "loras" / args.subdir / slug(model["name"])
         name = safe_file_name(f.get("name"))

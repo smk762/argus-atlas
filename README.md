@@ -242,6 +242,8 @@ Every bake holds a GPU lease from the suite's coordinator, set host-wide by `ARG
 
 The URL and the token are all atlas needs. argus-cortex reads the tenant and its kinds from `gpu-tenant.yaml` in the working directory or at `/app/gpu-tenant.yaml`, where the image ships it. `argus-atlas serve` registers the tenant with the broker at startup, keeps it registered, and signs off at shutdown, so iris knows atlas before its first bake; the CLI registers with its first lease. Startup never waits on the broker.
 
+`ARGUS_GPU_BROKER_URL`, `ARGUS_GPU_BROKER_TOKEN` and `ARGUS_COMFYUI_URL` are the same for every Argus service on a host, so they can be written once in the suite settings file, `~/.config/argus/suite.env` (mode 600; `python -m argus_cortex.settings --init` creates it), instead of in each repo's `.env`. argus-cortex reads the environment first and the file second, so a value set for atlas still wins. Under Compose, add [`compose.suite.yaml`](compose.suite.yaml) to mount the file read-only at `/etc/argus/suite.env` (`COMPOSE_FILE=compose.yaml:compose.suite.yaml` in `.env`); it is a separate file because a host without a suite file could not start with the mount in place.
+
 | Variable | Value |
 |---|---|
 | `ARGUS_GPU_BROKER_URL` | `http://<GPU_HOST>:8120`; unset means no gating |
@@ -278,7 +280,7 @@ Port 8105, a peer of the other suite servers. CORS from `ATLAS_CORS_ORIGINS`, de
 
 | Method and path | Purpose |
 |---|---|
-| `GET /health` | status, service, version, read-only flag, `osm_allowed`, `delete_allowed`, GDAL version |
+| `GET /health` | the suite's `ServiceHealth` (argus-cortex): `status` (`ok`, or `degraded` when GDAL is missing; both HTTP 200), `service`, `version`, `started_at`, `wire` (`atlas_version`), `checks` (`gdal`, and `comfyui` where baking is allowed, which never degrades the service), `read_only`; plus atlas's own `commit`, `osm_allowed`, `delete_allowed` and `gdal` (the version). `?checks=0` skips the checks |
 | `GET /doctor` | GDAL version, ComfyUI reachability, bake-allowed flag |
 | `GET /presets` | the style presets `POST /bake/stream` accepts by name |
 | `GET /inputs` | what `POST /controls` may name: DEMs, vector files and OSM extracts under `ATLAS_DEM_DIR` |
@@ -309,7 +311,7 @@ Progress events on the bake stream, in order: `controls`, `generate`, `georefere
 | `ATLAS_OVERPASS_URL` | `https://overpass-api.de/api/interpreter` | Overpass endpoint for `osm`, `chunks` and `POST /osm` |
 | `ATLAS_RECIPES_DIR` | `/data/recipes` | Where `--recipe <name>` finds `<name>.json` |
 | `ATLAS_BACKEND` | `comfyui` | Backend key |
-| `COMFYUI_BASE_URL` | `http://host.docker.internal:8188` | ComfyUI on the compose host |
+| `COMFYUI_BASE_URL` | `http://host.docker.internal:8188` | ComfyUI on the compose host. Unset, the suite-wide `ARGUS_COMFYUI_URL` is used, then the default. A value that is not an absolute `http(s)` URL is refused, naming the variable |
 | `ATLAS_MODELS_DIR` | `/data/models` | Checkpoints and LoRAs, read-only, SHA256 recorded per job |
 | `ATLAS_WORKFLOW` | packaged template | API-format ComfyUI graph with `$placeholders` |
 | `ATLAS_CORS_ORIGINS` | `http://localhost:3000` | Browser origins |

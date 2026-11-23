@@ -237,3 +237,58 @@ def test_a_model_that_cannot_be_read_is_a_backend_error(tmp_path: Path) -> None:
     (tmp_path / "dir.safetensors").mkdir()
     with pytest.raises(BackendError, match="cannot hash model 'dir.safetensors'"):
         hash_model(lambda name: tmp_path / name, "dir.safetensors")
+
+
+# --- where ComfyUI is: atlas's variable, the suite-wide one, the default ----------------------------------------
+
+
+def test_comfyui_url_order_is_override_own_variable_suite_variable_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_atlas import config
+
+    assert config.comfyui_url() == config.DEFAULT_COMFYUI_URL
+    monkeypatch.setenv("ARGUS_COMFYUI_URL", "http://suite.invalid:8188/")
+    assert config.comfyui_url() == "http://suite.invalid:8188"
+    monkeypatch.setenv("COMFYUI_BASE_URL", "http://own.invalid:8188")
+    assert config.comfyui_url() == "http://own.invalid:8188"  # atlas's own name still wins
+    assert config.comfyui_url("http://flag.invalid:8188") == "http://flag.invalid:8188"
+    monkeypatch.setenv("COMFYUI_BASE_URL", "")  # what compose's ${COMFYUI_BASE_URL:-} passes: unset
+    assert config.comfyui_url() == "http://suite.invalid:8188"
+
+
+def test_comfyui_url_comes_from_the_suite_file_when_the_environment_is_silent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from argus_atlas import config
+
+    suite = tmp_path / "suite.env"
+    suite.write_text("ARGUS_COMFYUI_URL=http://file.invalid:8188\n", encoding="utf-8")
+    suite.chmod(0o600)
+    monkeypatch.setenv("ARGUS_ENV_FILE", str(suite))
+    assert config.comfyui_url() == "http://file.invalid:8188"
+    monkeypatch.setenv("COMFYUI_BASE_URL", "http://own.invalid:8188")
+    assert config.comfyui_url() == "http://own.invalid:8188"
+
+
+@pytest.mark.parametrize("value", ["gpu-box:8188", "/comfy", "http://h.invalid:8188/?token=made-up"])
+def test_a_malformed_comfyui_url_is_refused_by_name_not_replaced_by_the_default(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    from argus_atlas import config
+    from argus_atlas.backends import backend_from_env
+    from argus_atlas.models import AtlasError
+
+    monkeypatch.setenv("COMFYUI_BASE_URL", value)
+    with pytest.raises(AtlasError) as refused:
+        config.comfyui_url()
+    assert "COMFYUI_BASE_URL" in str(refused.value) and value not in str(refused.value)
+    with pytest.raises(AtlasError):  # the CLI and GET /doctor report it as a configuration error
+        backend_from_env()
+
+
+def test_comfyui_turned_off_is_an_error_not_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    from argus_atlas import config
+    from argus_atlas.models import AtlasError
+
+    monkeypatch.setenv("ARGUS_COMFYUI_URL", "off")
+    with pytest.raises(AtlasError, match="turned off"):
+        config.comfyui_url()

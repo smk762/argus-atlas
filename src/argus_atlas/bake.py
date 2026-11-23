@@ -15,10 +15,10 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
+from argus_cortex.timestamps import utc_now_iso
 
 from argus_atlas.backends.base import BakeBackend, BakeRequest, hash_model, make_dir_resolver
 from argus_atlas.georef import FANTASY_PNG, FANTASY_TIF, AlignmentError, stamp
@@ -36,10 +36,6 @@ ProgressSink = Callable[[ProgressEvent], None]
 # moved onto ``fantasy.png``, so a failed bake never leaves job.json describing
 # a half-written or foreign canvas.
 FANTASY_PART = "fantasy.part.png"
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def verify_controls(job_dir: Path, sidecar: JobSidecar) -> dict[str, Path]:
@@ -144,7 +140,7 @@ def run_bake(
                 geotiff=None,
                 aligned=False,
                 error=str(exc),
-                completed_at=_now(),
+                completed_at=utc_now_iso(),
                 generator=generator(),
             )
             sidecar.tiles = None
@@ -162,7 +158,7 @@ def run_bake(
             image=image_ref,
             geotiff=FileRef(path=tif.name, sha256=sha256_file(tif)),
             aligned=True,
-            completed_at=_now(),
+            completed_at=utc_now_iso(),
             generator=generator(),
         )
         sidecar.tiles = None  # a new bake invalidates any earlier archive

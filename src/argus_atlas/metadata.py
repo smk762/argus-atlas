@@ -77,6 +77,10 @@ _TAG_USER_COMMENT = 0x9286
 _ASCII, _LONG, _UNDEFINED = 2, 4, 7
 
 
+def _even(data: bytes) -> bytes:
+    return data + b"\x00" * (len(data) % 2)
+
+
 def build_exif(description: str, software: str = SOFTWARE) -> bytes:
     """A little-endian TIFF/EXIF structure: IFD0 {ImageDescription, Software,
     ExifIFD} and an Exif IFD {UserComment = description}."""
@@ -87,8 +91,10 @@ def build_exif(description: str, software: str = SOFTWARE) -> bytes:
     ifd0_off = 8
     ifd0_len = 2 + 3 * 12 + 4
     # TIFF: a value of 4 bytes or fewer lives in the entry itself, not at an offset.
-    desc_data = desc if len(desc) > 4 else b""
-    soft_data = soft if len(soft) > 4 else b""
+    # Each out-of-line value is padded to an even length (the counts stay unpadded): TIFF wants every
+    # IFD on a word boundary and EXIF wants even value offsets, which strict readers enforce.
+    desc_data = _even(desc) if len(desc) > 4 else b""
+    soft_data = _even(soft) if len(soft) > 4 else b""
     desc_off = ifd0_off + ifd0_len
     soft_off = desc_off + len(desc_data)
     exif_ifd_off = soft_off + len(soft_data)

@@ -16,6 +16,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -51,7 +54,8 @@ jobs:
         python-version: ["3.11", "3.12"]
     env:
       ATLAS_TEST_REQUIRE_GDAL: "1"
-      # Private names the docs opsec gate refuses (tests/test_rules.py), kept out of git. Empty is fine.
+      # Private names the docs opsec gate refuses (tests/test_rules.py), kept out of git. Empty (e.g. a PR from a
+      # fork, which gets no secrets) skips only the name check.
       OPSEC_DENYLIST: ${{ secrets.OPSEC_DENYLIST }}
     steps:
       - uses: actions/checkout@v4

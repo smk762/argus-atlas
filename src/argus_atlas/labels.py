@@ -36,7 +36,7 @@ import structlog
 
 from argus_atlas import gdal_ops
 from argus_atlas.hashing import sha256_file
-from argus_atlas.jobs import load_sidecar, save_sidecar
+from argus_atlas.jobs import load_sidecar, save_sidecar, sidecar_lock
 from argus_atlas.mercator import mercator_to_bbox
 from argus_atlas.models import SIDECAR_NAME, AtlasError, BBox, FileRef, GdalCommand, Grid, JobSidecar, LabelsRecord
 from argus_atlas.osm import MANIFEST_NAME as OSM_MANIFEST_NAME
@@ -258,16 +258,19 @@ def label_job(job_dir: Path, source: Path, *, zoom: int | None = None, layer: st
         staged = Path(stage) / LABELS_NAME
         manifest = build_labels(source, mercator_to_bbox(*grid.bounds), zoom, staged, layer=layer)
         record = _labels_record(manifest, zoom)
-        # Re-read: a bake or tiles run may have rewritten job.json while ogr2ogr ran.
-        current = load_sidecar(job_dir)
-        if labelled_grid(current) != grid:
-            raise AtlasError(f"{job_dir.name}: the job's grid changed while labelling; run labels again")
-        previous = _manifest_commands(out) if current.labels else []  # replaced, not stacked, on a re-run
-        os.replace(staged, out)
-        os.replace(manifest_path(staged), manifest_path(out))
-    kept = [c for c in current.commands if c not in previous]
-    commands = [GdalCommand.model_validate(c) for c in manifest["commands"]]
-    save_sidecar(job_dir, current.model_copy(update={"labels": record, "commands": [*kept, *commands]}))
+        commands = [GdalCommand.model_validate(c) for c in manifest["commands"]]
+        # Re-read under the job.json lock: a bake or tiles run may have rewritten job.json while
+        # ogr2ogr ran, and none may save between this read and the write below.
+        with sidecar_lock(job_dir):
+            current = load_sidecar(job_dir)
+            if labelled_grid(current) != grid:
+                raise AtlasError(f"{job_dir.name}: the job's grid changed while labelling; run labels again")
+            previous = _manifest_commands(out) if current.labels else []  # replaced, not stacked, on a re-run
+            os.replace(staged, out)
+            os.replace(manifest_path(staged), manifest_path(out))
+            kept = [c for c in current.commands if c not in previous]
+            update = {"labels": record, "commands": [*kept, *commands]}
+            save_sidecar(job_dir, current.model_copy(update=update), locked=True)
     return record
 
 

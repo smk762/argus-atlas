@@ -7,9 +7,12 @@ artifact by ``(job_id, kind)`` and never resolves a client-supplied path.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import secrets
 import shutil
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 from argus_cortex.fs import PathRefused, safe_name
@@ -22,6 +25,8 @@ PREVIEW_FILES: dict[str, str] = {"fantasy": "fantasy.png"}
 BAKE_OUTPUT_PREFIX = "fantasy"
 # Timings of the stages copy_job carries over with the controls.
 CONTROL_STAGES: frozenset[str] = frozenset({"controls", "seams"})
+# flock'd around every job.json write, and by a read-modify-write that must not lose another run's save.
+SIDECAR_LOCK = ".job.lock"
 
 
 def is_safe_id(value: str) -> bool:
@@ -44,7 +49,23 @@ def new_job_id() -> str:
     return f"atlas-{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}"
 
 
-def save_sidecar(job_dir: Path, sidecar: JobSidecar) -> Path:
+@contextlib.contextmanager
+def sidecar_lock(job_dir: Path) -> Iterator[None]:
+    """Hold the job's ``job.json`` lock. Not re-entrant: inside it, save with ``locked=True``."""
+    job_dir.mkdir(parents=True, exist_ok=True)
+    with (job_dir / SIDECAR_LOCK).open("a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def save_sidecar(job_dir: Path, sidecar: JobSidecar, *, locked: bool = False) -> Path:
+    """Write ``job.json`` atomically under :func:`sidecar_lock` (*locked*: the caller already holds it)."""
+    if not locked:
+        with sidecar_lock(job_dir):
+            return save_sidecar(job_dir, sidecar, locked=True)
     job_dir.mkdir(parents=True, exist_ok=True)
     path = job_dir / SIDECAR_NAME
     tmp = path.with_name(path.name + ".tmp")
@@ -102,7 +123,11 @@ def copy_job(src: Path, dst: Path) -> JobSidecar:
     staging.mkdir()
     try:
         for source in src.iterdir():
-            if source.is_file() and source.name != SIDECAR_NAME and not source.name.startswith(BAKE_OUTPUT_PREFIX):
+            if (
+                source.is_file()
+                and source.name not in (SIDECAR_NAME, SIDECAR_LOCK)
+                and not source.name.startswith(BAKE_OUTPUT_PREFIX)
+            ):
                 shutil.copy2(source, staging / source.name)
         fresh = _fresh_copy(sidecar, job_id)
         save_sidecar(staging, fresh)

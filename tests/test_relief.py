@@ -10,6 +10,7 @@ from pathlib import Path
 import click
 import pytest
 import typer
+from argus_cortex.hashing import sha256_hex
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
@@ -17,7 +18,6 @@ from argus_atlas import gdal_ops
 from argus_atlas.chunks import find_neighbours, run_chunk
 from argus_atlas.cli import app
 from argus_atlas.controls import build_controls, plan_grid, resolve_relief
-from argus_atlas.hashing import sha256_bytes
 from argus_atlas.jobs import load_sidecar, save_sidecar
 from argus_atlas.mercator import lonlat_to_mercator, scale_factor
 from argus_atlas.models import AtlasError, Grid, Recipe, ReliefRecord, relief_key, relief_key_for
@@ -78,7 +78,7 @@ def test_relief_is_in_the_recipe_digest() -> None:
     assert len(digests) == 4, "every relief setting is its own recipe"
     # z_factor 1 (no correction, no exaggeration) keeps the digest chunks baked before 0.3.0 carry.
     before = {k: v for k, v in legacy.model_dump(mode="json").items() if k not in {"z_factor", "vertical_exaggeration"}}
-    assert recipe_digest(legacy) == sha256_bytes(json.dumps(before, sort_keys=True, separators=(",", ":")).encode())
+    assert recipe_digest(legacy) == sha256_hex(json.dumps(before, sort_keys=True, separators=(",", ":")).encode())
     assert with_relief(auto) is auto
     with pytest.raises(AtlasError):
         with_relief(auto, vertical_exaggeration=-1.0)
@@ -97,7 +97,7 @@ def test_relief_keys() -> None:
 def test_cli_rejects_a_bad_z_factor(tmp_path: Path) -> None:
     args = ["controls", "--dem", str(tmp_path / "x.tif"), "--bbox", TEST_BBOX.as_text(), "--out", str(tmp_path / "j")]
     result = runner.invoke(app, [*args, "--z-factor", "steep"])
-    assert result.exit_code == 2 and "--z-factor" in result.output
+    assert result.exit_code == 2 and "--z-factor" in click.unstyle(result.output)
     # Below zero is a usage error naming the option; zero passes Typer's range and is refused by
     # resolve_relief (asserted directly: the CLI gets there only with GDAL and a real DEM).
     result = runner.invoke(app, [*args, "--ve", "-1"])
@@ -177,6 +177,9 @@ def test_chunks_of_other_relief_are_not_neighbours_or_one_mosaic(dem: Path, tmp_
         run_chunk(dem, b_tile, legacy, tmp_path / "antique-14-8651-5890", size=256, margin=32, controls_only=True)
     probe = a.chunk.model_copy(update={"x": 8651})  # type: ignore[union-attr]
     assert [n.tile for n in find_neighbours(tmp_path, "antique", probe, relief=("auto", 1.0))] == [a_tile]
+    for other in (("fixed", 1.0), ("auto", 0.5)):  # the same recipe name with other relief is not a neighbour
+        with pytest.raises(AtlasError, match=f"has relief auto 1, this chunk {other[0]} {other[1]:g}"):
+            find_neighbours(tmp_path, "antique", probe, relief=other)
 
     # A chunk from before 0.3.0 (no relief record) in the same style dir: the mosaic refuses the mix.
     old_dir = tmp_path / "antique-14-8651-5891"

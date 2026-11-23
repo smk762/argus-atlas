@@ -154,7 +154,7 @@ def test_the_prompt_goes_to_the_comfyui_the_grant_names(
 ) -> None:
     placed, configured = FakeTransport(), FakeTransport()
     placed._tmp = str(tmp_path)
-    backend = _backend(tmp_path, Recording([GpuLease(via="broker", base_url="http://dragon:8188/")]), configured)
+    backend = _backend(tmp_path, Recording([GpuLease(via="broker", base_url="http://gpu-a:8188/")]), configured)
     seen: list[str | None] = []
 
     def transport_for(base_url):  # noqa: ANN001, ANN202
@@ -163,7 +163,7 @@ def test_the_prompt_goes_to_the_comfyui_the_grant_names(
 
     monkeypatch.setattr(backend, "_transport_for", transport_for)
     out = backend.generate(_request(controls), tmp_path / "fantasy.png")
-    assert seen == ["http://dragon:8188/"]
+    assert seen == ["http://gpu-a:8188/"]
     assert len(placed.posts) == 1 and configured.posts == [] and configured.uploads == []
     assert out.detail["gpu_via"] == "broker"
 
@@ -172,7 +172,7 @@ def test_a_grant_without_a_url_uses_the_configured_comfyui(tmp_path: Path) -> No
     configured = FakeTransport()
     backend = _backend(tmp_path, Recording(), configured)
     assert backend._transport_for(None) is configured
-    assert backend._transport_for("http://dragon:8188") is backend._transport_for("http://dragon:8188/")
+    assert backend._transport_for("http://gpu-a:8188") is backend._transport_for("http://gpu-a:8188/")
     with pytest.raises(BackendError, match="unusable ComfyUI URL"):
         backend._transport_for("file:///etc")
 
@@ -214,8 +214,8 @@ def test_a_session_takes_no_lease_until_a_tile_is_painted(tmp_path: Path) -> Non
 def test_a_block_holds_one_lease_and_requeues_on_the_same_node_when_asked(
     tmp_path: Path, controls: dict[str, Path]
 ) -> None:
-    first = GpuLease(via="broker", node="dragon")
-    second = GpuLease(via="broker", node="dragon")
+    first = GpuLease(via="broker", node="gpu-a")
+    second = GpuLease(via="broker", node="gpu-a")
     coordinator = Recording([first, second])
     backend = _backend(tmp_path, coordinator)
     with backend.gpu_session("chunks:antique") as leases:
@@ -227,7 +227,7 @@ def test_a_block_holds_one_lease_and_requeues_on_the_same_node_when_asked(
     assert len(coordinator.calls) == 2  # given back once, between chunks 0 and 1
     assert [c["caller"] for c in coordinator.calls] == ["chunks:antique"] * 2
     assert coordinator.calls[0]["constraints"] is None
-    assert coordinator.calls[1]["constraints"].node == "dragon"  # pinned: one recipe, one ComfyUI
+    assert coordinator.calls[1]["constraints"].node == "gpu-a"  # pinned: one recipe, one ComfyUI
     assert leases.yields == 1 and coordinator.exits == [None, None]
 
 

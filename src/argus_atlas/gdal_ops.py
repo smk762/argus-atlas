@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -119,10 +120,14 @@ GDALINFO_TIMEOUT = 120.0
 
 
 def gdalinfo_json(path: Path, *, stats: bool = False) -> dict:
-    """``gdalinfo -json`` of *path* as a dict; *stats* adds exact per-band statistics (NoData excluded)."""
+    """``gdalinfo -json`` of *path* as a dict; *stats* adds exact per-band statistics (NoData excluded).
+
+    PAM is off, so ``-stats`` neither writes a ``.aux.xml`` beside *path* nor reuses a stale one.
+    """
     argv = ["gdalinfo", "-json", *(["-stats"] if stats else []), str(path)]
+    env = {**os.environ, "GDAL_PAM_ENABLED": "NO"}
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=GDALINFO_TIMEOUT, check=False)
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=GDALINFO_TIMEOUT, check=False, env=env)
     except FileNotFoundError as exc:
         raise GdalError("gdalinfo is not installed (not on PATH)") from exc
     except subprocess.TimeoutExpired as exc:
@@ -167,7 +172,7 @@ def dem_pixel_metres(dem: Path, latitude: float) -> float | None:
     except (GdalError, KeyError, TypeError):
         return None
     dx, dy = abs(float(gt[1])), abs(float(gt[5]))
-    if wkt.startswith(("GEOGCRS", "GEOGCS")):
+    if is_geographic(wkt):
         # Only a degree of longitude shrinks with latitude; a degree of latitude stays ~110.6 km.
         x_m = dx * METRES_PER_DEG_LON * max(0.1, math.cos(math.radians(latitude)))
         y_m = dy * METRES_PER_DEG_LAT
@@ -178,18 +183,100 @@ def dem_pixel_metres(dem: Path, latitude: float) -> float | None:
 METRES_PER_DEG_LON = 111320.0  # at the equator
 METRES_PER_DEG_LAT = 110574.0
 
-# The CS-level linear unit is the last LENGTHUNIT (WKT2) / UNIT (WKT1) in a projected CRS.
-_UNIT_RE = re.compile(r'\b(?:LENGTHUNIT|UNIT)\["[^"]*",\s*([0-9.]+(?:[eE][-+]?\d+)?)')
+# A WKT node: its keyword and its arguments (strings, numbers and nested nodes).
+_WktNode = tuple[str, list]
+_WKT_TOKEN = re.compile(r'\s*(?:("(?:[^"]|"")*")|([\[\]\(\),])|([^\s\[\]\(\),"]+))')
+_GEOGRAPHIC = frozenset({"GEOGCS", "GEOGCRS", "GEOGRAPHICCRS", "BASEGEOGCRS"})
+_PROJECTED = frozenset({"PROJCS", "PROJCRS", "PROJECTEDCRS"})
+_COMPOUND = frozenset({"COMPD_CS", "COMPOUNDCRS"})
+_LINEAR_UNIT = frozenset({"UNIT", "LENGTHUNIT"})
+# Real CRS WKT nests a handful of levels. Past this the string is hostile, not a CRS, and
+# walking it would blow the call stack.
+_MAX_WKT_DEPTH = 64
+
+
+class _WktTooDeep(Exception):
+    """Nesting past ``_MAX_WKT_DEPTH``. Caught by the parser and reported as unparseable."""
+
+
+def _parse_wkt(wkt: str) -> _WktNode | None:
+    """The root node of *wkt*, or ``None`` if it does not parse."""
+    tokens = [m.group(1) or m.group(2) or m.group(3) for m in _WKT_TOKEN.finditer(wkt) if m.group(0).strip()]
+    pos = 0
+
+    def node(depth: int = 0) -> _WktNode:
+        nonlocal pos
+        if depth > _MAX_WKT_DEPTH:
+            raise _WktTooDeep
+        keyword = tokens[pos].upper()
+        pos += 1
+        args: list = []
+        if pos < len(tokens) and tokens[pos] in ("[", "("):
+            pos += 1
+            while tokens[pos] not in ("]", ")"):
+                tok = tokens[pos]
+                if tok == ",":
+                    pos += 1
+                elif tok.startswith('"'):
+                    args.append(tok[1:-1].replace('""', '"'))
+                    pos += 1
+                elif pos + 1 < len(tokens) and tokens[pos + 1] in ("[", "("):
+                    args.append(node(depth + 1))
+                else:
+                    args.append(tok)
+                    pos += 1
+            pos += 1
+        return keyword, args
+
+    try:
+        return node() if tokens else None
+    except (IndexError, RecursionError, _WktTooDeep):
+        # Truncated WKT, nesting past the depth cap, or the interpreter's own recursion limit.
+        return None
+
+
+def _horizontal_crs(wkt: str) -> _WktNode | None:
+    """The horizontal CRS node of *wkt*: the first member of a compound CRS, the source of a bound one."""
+    crs = _parse_wkt(wkt)
+    while crs is not None:
+        keyword, args = crs
+        children = [a for a in args if isinstance(a, tuple)]
+        if keyword in _COMPOUND:
+            crs = children[0] if children else None
+        elif keyword == "BOUNDCRS":
+            source = next((c for c in children if c[0] == "SOURCECRS"), None)
+            crs = next((c for c in source[1] if isinstance(c, tuple)), None) if source else None
+        else:
+            return crs
+    return None
+
+
+def is_geographic(wkt: str) -> bool:
+    """Whether the horizontal part of *wkt* is in degrees (also inside a compound or bound CRS)."""
+    crs = _horizontal_crs(wkt)
+    return crs is not None and crs[0] in _GEOGRAPHIC
 
 
 def linear_unit_metres(wkt: str) -> float:
-    """Metres per linear unit of a projected CRS's WKT (1 for metres, 0.3048 for feet); 1 if none is stated."""
-    found = _UNIT_RE.findall(wkt)
-    try:
-        factor = float(found[-1]) if found else 1.0
-    except ValueError:
+    """Metres per linear unit of a projected CRS's WKT (1 for metres, 0.3048 for feet).
+
+    Read from the horizontal CRS only (never a compound CRS's vertical unit, nor the units inside its
+    base CRS or conversion); 1 if the CRS is not projected or states no linear unit.
+    """
+    crs = _horizontal_crs(wkt)
+    if crs is None or crs[0] not in _PROJECTED:
         return 1.0
-    return factor if factor > 0 else 1.0
+    children = [a for a in crs[1] if isinstance(a, tuple)]
+    units = [c for c in children if c[0] in _LINEAR_UNIT]  # WKT1 UNIT, or a WKT2 CS-wide LENGTHUNIT
+    for axis in (c for c in children if c[0] == "AXIS"):  # WKT2: a LENGTHUNIT on each axis
+        units += [a for a in axis[1] if isinstance(a, tuple) and a[0] == "LENGTHUNIT"]
+    for _, args in units:
+        try:
+            factor = float(args[1])
+        except (IndexError, TypeError, ValueError):
+            continue
+        return factor if math.isfinite(factor) and factor > 0 else 1.0
+    return 1.0
 
 
 def choose_resampling(dem_metres: float | None, canvas_metres: float) -> str:

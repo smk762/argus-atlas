@@ -417,6 +417,9 @@ def create_app(
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         try:
             with _claimed(job_id):
+                # Again under the claim: another request may have created it since the check above.
+                if store.exists(job_id):
+                    raise HTTPException(status_code=409, detail=f"job {job_id!r} already exists")
                 sidecar = build_controls(
                     dem,
                     bbox,
@@ -466,8 +469,13 @@ def create_app(
             backend = _backend()
         except (BackendError, AtlasError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        job_dir = store.dir(sidecar.job_id)
         _claim(sidecar.job_id)
+        try:  # re-read under the claim: a purge may have removed the job since the read above
+            sidecar = _load(sidecar.job_id)
+        except BaseException:
+            _release(sidecar.job_id)
+            raise
+        job_dir = store.dir(sidecar.job_id)
 
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[dict | None] = asyncio.Queue()
@@ -517,12 +525,14 @@ def create_app(
         from argus_atlas.georef import AlignmentError
         from argus_atlas.tiles import NotTileableError, tile_job
 
-        sidecar = _load(request.job_id)
-        job_dir = store.dir(sidecar.job_id)
-        if sidecar.bake is None or not sidecar.bake.aligned or sidecar.bake.geotiff is None:
-            raise HTTPException(status_code=409, detail=f"job {sidecar.job_id!r} has no aligned GeoTIFF to tile")
+        _require_id(request.job_id)
         try:
-            with _claimed(sidecar.job_id):
+            with _claimed(request.job_id):  # claimed before the read, so a purge cannot slip in between
+                sidecar = _load(request.job_id)
+                job_dir = store.dir(sidecar.job_id)
+                if sidecar.bake is None or not sidecar.bake.aligned or sidecar.bake.geotiff is None:
+                    detail = f"job {sidecar.job_id!r} has no aligned GeoTIFF to tile"
+                    raise HTTPException(status_code=409, detail=detail)
                 record = tile_job(job_dir, sidecar, min_zoom=request.min_zoom, max_zoom=request.max_zoom)
         except AlignmentError as exc:
             raise HTTPException(status_code=409, detail=f"alignment gate failed: {exc}") from exc

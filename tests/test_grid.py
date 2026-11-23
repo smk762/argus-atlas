@@ -83,3 +83,8 @@ def test_a_grid_with_non_square_pixels_is_refused() -> None:
     assert Grid(width=64, height=64, ulx=0, uly=0, pixel_width=10.0, pixel_height=-10.0).resolution == 10.0
     with pytest.raises(ValidationError, match="square"):
         Grid(width=64, height=64, ulx=0, uly=0, pixel_width=10.0, pixel_height=-20.0)
+
+
+def test_a_vanishingly_small_resolution_is_over_the_cap_not_an_overflow() -> None:
+    with pytest.raises(AtlasError, match="too fine"):
+        plan_grid(BBox(west=10.0, south=45.0, east=10.1, north=45.05), resolution=1e-320)

@@ -90,7 +90,8 @@ def make_dir_resolver(root: Path) -> ModelResolver:
 
     def resolve(name: str) -> Path:
         rel = Path(name)
-        if not name or "\x00" in name or rel.is_absolute() or ".." in rel.parts:
+        # An empty basename ("." or "./") names the root itself, and would make rglob('') raise ValueError.
+        if not name or "\x00" in name or rel.is_absolute() or ".." in rel.parts or not rel.name:
             raise FileNotFoundError(f"model name {name!r} must be a relative path under the models root")
         direct = root / rel
         if direct.is_file() and inside(direct):

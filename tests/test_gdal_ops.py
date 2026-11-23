@@ -35,6 +35,66 @@ def test_projected_feet_are_converted(monkeypatch: pytest.MonkeyPatch) -> None:
     assert gdal_ops.linear_unit_metres('PROJCS["x",GEOGCS["y",UNIT["degree",0.0174]],UNIT["metre",1]]') == 1.0
 
 
+COMPOUND_FEET_WKT = (
+    'COMPD_CS["UTM 10N + NAVD88 height (ftUS)",PROJCS["WGS 84 / UTM zone 10N",GEOGCS["WGS 84",'
+    'DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],UNIT["degree",0.0174532925199433]],'
+    'PROJECTION["Transverse_Mercator"],PARAMETER["central_meridian",-123],UNIT["metre",1]],'
+    'VERT_CS["NAVD88 height (ftUS)",VERT_DATUM["North American Vertical Datum 1988",2005],'
+    'UNIT["US survey foot",0.304800609601219]]]'
+)
+COMPOUND_GEOG_WKT = (
+    'COMPOUNDCRS["WGS 84 + EGM96 height",GEOGCRS["WGS 84",DATUM["World Geodetic System 1984",'
+    'ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]]],CS[ellipsoidal,2],'
+    'AXIS["latitude",north,ANGLEUNIT["degree",0.0174532925199433]],'
+    'AXIS["longitude",east,ANGLEUNIT["degree",0.0174532925199433]]],'
+    'VERTCRS["EGM96 height",VDATUM["EGM96 geoid"],CS[vertical,1],AXIS["up",up,LENGTHUNIT["metre",1]]]]'
+)
+BOUND_GEOG_WKT = (
+    'BOUNDCRS[SOURCECRS[GEOGCRS["WGS 84",DATUM["WGS84",ELLIPSOID["WGS 84",6378137,298.257223563]],'
+    'CS[ellipsoidal,2],AXIS["lat",north,ANGLEUNIT["degree",0.0174532925199433]]]],'
+    'TARGETCRS[GEOGCRS["WGS 84"]],ABRIDGEDTRANSFORMATION["towgs84",METHOD["Position Vector"]]]'
+)
+
+
+def test_the_horizontal_unit_ignores_vertical_and_angular_units() -> None:
+    assert gdal_ops.linear_unit_metres(COMPOUND_FEET_WKT) == 1.0
+    assert gdal_ops.linear_unit_metres(COMPOUND_GEOG_WKT) == 1.0
+    assert gdal_ops.linear_unit_metres('GEOGCS["WGS 84",UNIT["degree",0.0174532925199433]]') == 1.0
+    assert gdal_ops.linear_unit_metres(FEET_WKT) == pytest.approx(0.3048006096)
+    assert gdal_ops.linear_unit_metres("not wkt [") == 1.0
+
+
+@pytest.mark.parametrize("wkt", [COMPOUND_GEOG_WKT, BOUND_GEOG_WKT])
+def test_a_wrapped_geographic_crs_is_still_in_degrees(monkeypatch: pytest.MonkeyPatch, wkt: str) -> None:
+    _info(monkeypatch, [0, 1 / 3600, 0, 0, 0, -1 / 3600], wkt)
+    got = gdal_ops.dem_pixel_metres(Path("x.tif"), 60.0)
+    assert got == pytest.approx((111320.0 * math.cos(math.radians(60)) + 110574.0) / 2 / 3600)
+    assert not gdal_ops.is_geographic(COMPOUND_FEET_WKT)
+
+
+def test_deeply_nested_wkt_is_unparseable() -> None:
+    modest = "Z"
+    for _ in range(8):
+        modest = f"N[{modest}]"
+    assert gdal_ops._parse_wkt(modest) is not None
+    wkt = "Z"
+    for _ in range(80):
+        wkt = f"N[{wkt}]"
+    assert gdal_ops._parse_wkt(wkt) is None
+
+
+def test_gdalinfo_stats_never_writes_or_reads_an_aux_xml(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = {}
+
+    def fake(argv, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        seen.update(kwargs.get("env") or {})
+        return subprocess.CompletedProcess(argv, 0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(gdal_ops.subprocess, "run", fake)
+    gdal_ops.gdalinfo_json(Path("dem.tif"), stats=True)
+    assert seen.get("GDAL_PAM_ENABLED") == "NO"
+
+
 def test_gdalinfo_timeout_is_a_gdal_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def slow(argv, **kwargs):  # noqa: ANN001, ANN003, ANN202
         raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))

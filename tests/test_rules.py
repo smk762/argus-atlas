@@ -177,8 +177,13 @@ def _refs(schema: object) -> set[str]:
     return set()
 
 
-def test_no_route_accepts_a_field_nobody_has_reviewed_for_paths() -> None:
-    spec = create_app().openapi()
+def _assert_request_models_are_reviewed(spec: dict, fields: dict[str, set[str]]) -> None:
+    """Every request body is a reviewed model, and every model those bodies reach is too.
+
+    Top-level bodies are a subset of ``fields``: a nested model is not itself a body, so it can be
+    listed in ``fields`` without being one of the bodies. The walk then requires the reviewed set
+    to be exactly the reached models that have properties, and each model's fields to match.
+    """
     components = spec.get("components", {}).get("schemas", {})
     bodies: set[str] = set()
     for path, item in spec["paths"].items():
@@ -189,18 +194,41 @@ def test_no_route_accepts_a_field_nobody_has_reviewed_for_paths() -> None:
                 schema = content.get("schema", {})
                 assert set(schema) == {"$ref"}, f"{method.upper()} {path} {media}: body is not one named model"
                 bodies.add(schema["$ref"].rsplit("/", 1)[-1])
-    assert bodies == set(REQUEST_FIELDS)
-    # The models those bodies reach, nested ones included, all need their fields reviewed.
+    assert bodies <= set(fields)
     reached, todo = set(), set(bodies)
     while todo:
         name = todo.pop()
         reached.add(name)
         todo |= _refs(components[name]) - reached
-    assert {n for n in reached if "properties" in components[n]} == set(REQUEST_FIELDS)
-    for name, fields in REQUEST_FIELDS.items():
-        assert set(components[name]["properties"]) == fields, name
+    assert {n for n in reached if "properties" in components[n]} == set(fields)
+    for name, want in fields.items():
+        assert set(components[name]["properties"]) == want, name
+
+
+def test_no_route_accepts_a_field_nobody_has_reviewed_for_paths() -> None:
+    spec = create_app().openapi()
+    _assert_request_models_are_reviewed(spec, REQUEST_FIELDS)
     params = {p["name"] for item in spec["paths"].values() for op in item.values() for p in op.get("parameters", [])}
     assert params <= PATH_PARAMS, params - PATH_PARAMS
+
+
+def test_a_reviewed_nested_model_can_be_registered() -> None:
+    spec = {
+        "paths": {
+            "/x": {
+                "post": {
+                    "requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Outer"}}}}
+                }
+            }
+        },
+        "components": {
+            "schemas": {
+                "Outer": {"type": "object", "properties": {"inner": {"$ref": "#/components/schemas/Inner"}}},
+                "Inner": {"type": "object", "properties": {"path": {"type": "string"}}},
+            }
+        },
+    }
+    _assert_request_models_are_reviewed(spec, {"Outer": {"inner"}, "Inner": {"path"}})
 
 
 class _Inner(BaseModel):

@@ -190,6 +190,13 @@ _GEOGRAPHIC = frozenset({"GEOGCS", "GEOGCRS", "GEOGRAPHICCRS", "BASEGEOGCRS"})
 _PROJECTED = frozenset({"PROJCS", "PROJCRS", "PROJECTEDCRS"})
 _COMPOUND = frozenset({"COMPD_CS", "COMPOUNDCRS"})
 _LINEAR_UNIT = frozenset({"UNIT", "LENGTHUNIT"})
+# Real CRS WKT nests a handful of levels. Past this the string is hostile, not a CRS, and
+# walking it would blow the call stack.
+_MAX_WKT_DEPTH = 64
+
+
+class _WktTooDeep(Exception):
+    """Nesting past ``_MAX_WKT_DEPTH``. Caught by the parser and reported as unparseable."""
 
 
 def _parse_wkt(wkt: str) -> _WktNode | None:
@@ -197,8 +204,10 @@ def _parse_wkt(wkt: str) -> _WktNode | None:
     tokens = [m.group(1) or m.group(2) or m.group(3) for m in _WKT_TOKEN.finditer(wkt) if m.group(0).strip()]
     pos = 0
 
-    def node() -> _WktNode:
+    def node(depth: int = 0) -> _WktNode:
         nonlocal pos
+        if depth > _MAX_WKT_DEPTH:
+            raise _WktTooDeep
         keyword = tokens[pos].upper()
         pos += 1
         args: list = []
@@ -212,7 +221,7 @@ def _parse_wkt(wkt: str) -> _WktNode | None:
                     args.append(tok[1:-1].replace('""', '"'))
                     pos += 1
                 elif pos + 1 < len(tokens) and tokens[pos + 1] in ("[", "("):
-                    args.append(node())
+                    args.append(node(depth + 1))
                 else:
                     args.append(tok)
                     pos += 1
@@ -221,7 +230,8 @@ def _parse_wkt(wkt: str) -> _WktNode | None:
 
     try:
         return node() if tokens else None
-    except IndexError:
+    except (IndexError, RecursionError, _WktTooDeep):
+        # Truncated WKT, nesting past the depth cap, or the interpreter's own recursion limit.
         return None
 
 

@@ -10,6 +10,7 @@ from pathlib import Path
 import click
 import pytest
 import typer
+from argus_cortex.hashing import sha256_hex
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
@@ -17,7 +18,6 @@ from argus_atlas import gdal_ops
 from argus_atlas.chunks import find_neighbours, run_chunk
 from argus_atlas.cli import app
 from argus_atlas.controls import build_controls, plan_grid, resolve_relief
-from argus_atlas.hashing import sha256_bytes
 from argus_atlas.jobs import load_sidecar, save_sidecar
 from argus_atlas.mercator import lonlat_to_mercator, scale_factor
 from argus_atlas.models import AtlasError, Grid, Recipe, ReliefRecord, relief_key, relief_key_for
@@ -78,7 +78,7 @@ def test_relief_is_in_the_recipe_digest() -> None:
     assert len(digests) == 4, "every relief setting is its own recipe"
     # z_factor 1 (no correction, no exaggeration) keeps the digest chunks baked before 0.3.0 carry.
     before = {k: v for k, v in legacy.model_dump(mode="json").items() if k not in {"z_factor", "vertical_exaggeration"}}
-    assert recipe_digest(legacy) == sha256_bytes(json.dumps(before, sort_keys=True, separators=(",", ":")).encode())
+    assert recipe_digest(legacy) == sha256_hex(json.dumps(before, sort_keys=True, separators=(",", ":")).encode())
     assert with_relief(auto) is auto
     with pytest.raises(AtlasError):
         with_relief(auto, vertical_exaggeration=-1.0)

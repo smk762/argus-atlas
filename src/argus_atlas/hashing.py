@@ -28,10 +28,6 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
 def sha256_cached(path: Path) -> str:
     """SHA256 of *path*, memoized by ``(path, size, mtime)`` for the process (a changed file replaces its entry)."""
     resolved = path.resolve()

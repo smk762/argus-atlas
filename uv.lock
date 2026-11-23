@@ -71,8 +71,8 @@ tiles = [
 
 [package.metadata]
 requires-dist = [
-    { name = "argus-cortex", extras = ["remote", "yaml"], specifier = ">=0.8,<0.9" },
-    { name = "argus-cortex", extras = ["server"], marker = "extra == 'server'", specifier = ">=0.8,<0.9" },
+    { name = "argus-cortex", extras = ["remote", "yaml"], specifier = ">=0.14,<0.15" },
+    { name = "argus-cortex", extras = ["server"], marker = "extra == 'server'", specifier = ">=0.14,<0.15" },
     { name = "certifi", marker = "extra == 'dev'", specifier = ">=2026.10.19" },
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.110" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
@@ -92,14 +92,14 @@ provides-extras = ["cli", "dev", "server", "tiles"]
 
 [[package]]
 name = "argus-cortex"
-version = "0.8.0"
+version = "0.14.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f2/3a/31193a0d5ea43aae655d52c803597ef60c5f94dd3934d65b84c1f636650a/argus_cortex-0.8.0.tar.gz", hash = "sha256:85c82d50219f3bf00e0d7dfe9838f4da86ceeefe2b0eca479a7b2a53a0003d9b", size = 183014, upload-time = "2026-11-16T15:38:05.96Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c6/78/3df0f69d095305c5545eca998a2592e1667e6b4f88a8a560edbf93d829b2/argus_cortex-0.14.0.tar.gz", hash = "sha256:3e088c75c86b0a147d6c2fd7264524f218d43cf0a09c892ac1ab066f92137c74", size = 344179, upload-time = "2026-11-23T02:25:23.013Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/44/17/5c985db1566aba4a9f0b3a9d1704123e5c78a1377f6ec3e15f51e7fd3306/argus_cortex-0.8.0-py3-none-any.whl", hash = "sha256:d981ac7de96c5985f5b032dbc85981e4fcd54d1e3e227fc7ea3b15d540543d57", size = 107214, upload-time = "2026-11-16T15:38:04.604Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/eb/b0a1f77d96611f159b3097f131a7679d9e6286fbab8a43a336b6602a19e1/argus_cortex-0.14.0-py3-none-any.whl", hash = "sha256:cf3cc64ea621cf0c5164189697479bbc9dc82c1f4938b72de4fe0b163828e8e8", size = 132690, upload-time = "2026-11-23T02:25:21.492Z" },
 ]
 
 [package.optional-dependencies]

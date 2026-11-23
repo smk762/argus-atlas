@@ -11,6 +11,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from argus_cortex.peers import PeerRefused, peer_env, peer_url
+
 from argus_atlas.models import AtlasError
 
 ENV_JOBS_DIR = "ATLAS_JOBS_DIR"
@@ -18,6 +20,7 @@ ENV_DEM_DIR = "ATLAS_DEM_DIR"
 ENV_ALLOW_BAKE = "ATLAS_ALLOW_BAKE"
 ENV_BACKEND = "ATLAS_BACKEND"
 ENV_COMFYUI_URL = "COMFYUI_BASE_URL"
+PEER_COMFYUI = "comfyui"  # the suite-wide name: ARGUS_COMFYUI_URL, also read from the suite settings file
 ENV_MODELS_DIR = "ATLAS_MODELS_DIR"
 ENV_WORKFLOW = "ATLAS_WORKFLOW"
 ENV_CORS_ORIGINS = "ATLAS_CORS_ORIGINS"
@@ -73,7 +76,21 @@ def backend_name(override: str | None = None) -> str:
 
 
 def comfyui_url(override: str | None = None) -> str:
-    return override or os.environ.get(ENV_COMFYUI_URL) or DEFAULT_COMFYUI_URL
+    """Where ComfyUI is: *override*, else ``COMFYUI_BASE_URL``, else the suite-wide ``ARGUS_COMFYUI_URL`` (each from
+    the environment, then the suite settings file), else the compose-host default.
+
+    A value that is not an absolute ``http(s)`` URL, or ``off``, is an :class:`AtlasError` naming the variable (never
+    the value, which may carry credentials): a typo must not send a bake to the default instead.
+    """
+    if override:
+        return override
+    try:
+        url = peer_url(PEER_COMFYUI, ENV_COMFYUI_URL, default=DEFAULT_COMFYUI_URL)
+    except PeerRefused as exc:
+        raise AtlasError(f"ComfyUI URL: {exc}") from exc
+    if url is None:
+        raise AtlasError(f"ComfyUI is turned off ({ENV_COMFYUI_URL} or {peer_env(PEER_COMFYUI)} is 'off')")
+    return url
 
 
 def workflow_path(override: str | os.PathLike[str] | None = None) -> Path | None:

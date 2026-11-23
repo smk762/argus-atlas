@@ -8,6 +8,7 @@ CI instead of relying on someone to remember the prose.
 from __future__ import annotations
 
 import ast
+import json
 import os
 import re
 import tomllib
@@ -385,3 +386,31 @@ def test_only_a_final_release_moves_latest() -> None:
     assert not re.search(r"latest=true|value=latest|:latest\b", release)
     tags = re.findall(r"type=(\w+),(?:pattern|value)=", release)  # image tags, not the gha build cache
     assert tags and set(tags) == {"pep440"}  # pep440 + latest=auto: alphas and rcs get their version tag only
+
+
+# --- The suite can find the service: discovery labels, and a suite file that is optional --------------------------
+
+
+def test_serve_carries_the_discovery_labels_and_the_suite_file_mount_is_optional() -> None:
+    from argus_cortex import service as cortex_service
+    from argus_cortex.peers import PEER_NAME_PATTERN
+
+    from argus_atlas.config import DEFAULT_PORT
+
+    services = _compose()["services"]
+    labels = services["serve"]["labels"]
+    assert labels == {
+        cortex_service.PEER_LABEL: "atlas",
+        cortex_service.SERVICE_LABEL: "argus-atlas",
+        cortex_service.HEALTH_LABEL: "/health",
+        cortex_service.PORT_LABEL: str(DEFAULT_PORT),
+    }
+    assert re.fullmatch(PEER_NAME_PATTERN, labels[cortex_service.PEER_LABEL])
+    assert "labels" not in services["atlas"] and "labels" not in services["test"]  # one-shots are not services
+    # compose.yaml starts on a host with no suite file; the mount is compose.suite.yaml's, read-only.
+    assert "suite.env" not in json.dumps(services)
+    suite = yaml.safe_load((ROOT / "compose.suite.yaml").read_text(encoding="utf-8"))["services"]
+    for name in ("atlas", "serve"):
+        [mount] = suite[name]["volumes"]
+        assert mount["target"] == "/etc/argus/suite.env" and mount["read_only"] is True
+        assert mount["bind"] == {"create_host_path": False}

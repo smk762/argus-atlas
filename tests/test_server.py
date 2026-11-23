@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import ANY
 
 import pytest
 from fastapi.testclient import TestClient
 
 from argus_atlas import __version__
+from argus_atlas.backends.base import BackendStatus
 from argus_atlas.jobs import JobStore
 from argus_atlas.models import BBox, FileRef, Grid, JobSidecar
 from argus_atlas.png import write_png
@@ -52,12 +54,61 @@ def _seed_job(jobs_root: Path, job_id: str = "seeded") -> JobSidecar:
 
 
 def test_health(client: TestClient) -> None:
-    body = client.get("/health").json()
-    assert body["status"] == "ok" and body["service"] == "argus-atlas" and body["version"] == __version__
+    resp = client.get("/health")
+    body = resp.json()
+    assert resp.status_code == 200  # ok and degraded both answer 200
+    assert body["status"] == ("ok" if HAS_GDAL else "degraded")  # GDAL is the one required dependency
+    assert body["service"] == "argus-atlas" and body["version"] == __version__
     assert body["read_only"] is True  # baking disabled by default
     assert body["osm_allowed"] is False  # and so is fetching OSM from the server
     assert "commit" in body
     assert (body["gdal"] is None) is (not HAS_GDAL)
+
+
+def test_health_is_a_service_health_that_keeps_atlas_fields(client: TestClient) -> None:
+    from argus_cortex.service import ServiceHealth
+
+    from argus_atlas.models import ATLAS_VERSION
+
+    body = client.get("/health").json()
+    health = ServiceHealth.model_validate(body)
+    assert health.service == "argus-atlas" and health.read_only is True
+    assert health.wire == {"atlas_version": ATLAS_VERSION}
+    assert health.checks["gdal"].required and health.checks["gdal"].ok is HAS_GDAL
+    assert "comfyui" not in health.checks  # baking is off: the backend is not this host's dependency
+    # Every field /health had before the contract is still top-level, with the same type.
+    for name in ("status", "service", "version", "commit", "read_only", "osm_allowed", "delete_allowed", "gdal"):
+        assert name in body, name
+    assert body["delete_allowed"] is False and isinstance(body["read_only"], bool)
+
+
+def test_health_without_checks_asks_no_dependency(roots: dict[str, Path]) -> None:
+    probes: list[str] = []
+
+    class Probed(FakeBackend):
+        def probe(self):  # noqa: ANN202
+            probes.append("probe")
+            return super().probe()
+
+    app = create_app(jobs_dir=roots["jobs"], dem_dir=roots["dem"], allow_bake=True, backend_factory=Probed)
+    c = TestClient(app)
+    shallow = c.get("/health?checks=0")
+    assert shallow.status_code == 200 and shallow.json()["checks"] == {} and probes == []
+    assert shallow.json()["status"] == "ok" and shallow.json()["read_only"] is False
+    full = c.get("/health").json()
+    assert full["checks"]["comfyui"] == {"ok": True, "detail": "0.0", "latency_ms": ANY, "required": False}
+
+
+def test_an_unreachable_comfyui_never_degrades_health_or_names_its_address(roots: dict[str, Path]) -> None:
+    class Down(FakeBackend):
+        def probe(self):  # noqa: ANN202
+            return BackendStatus(name=self.name, reachable=False, detail="http://comfy.invalid:8188 refused")
+
+    c = TestClient(create_app(jobs_dir=roots["jobs"], dem_dir=roots["dem"], allow_bake=True, backend_factory=Down))
+    resp = c.get("/health")
+    assert resp.status_code == 200 and "comfy.invalid" not in resp.text
+    assert resp.json()["checks"]["comfyui"]["ok"] is False
+    assert resp.json()["status"] == ("ok" if HAS_GDAL else "degraded")
 
 
 def test_osm_403_when_disabled_and_inputs_lists_dem_dir(client: TestClient, roots: dict[str, Path]) -> None:

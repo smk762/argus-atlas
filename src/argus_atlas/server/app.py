@@ -2,7 +2,7 @@
 
 Routes:
 
-    GET  /health                       {status, service, version, read_only, gdal}
+    GET  /health                       cortex's ServiceHealth plus {commit, osm_allowed, delete_allowed, gdal}
     GET  /doctor                       gdal version + tools, tiler, pmtiles packer, backend reachability, bake flag
     POST /controls                     {dem, bbox, land?, long_side?, resolution?, job_id?} -> {job_id, sidecar}
     POST /bake/stream                  NDJSON progress for one existing job; 403 unless ATLAS_ALLOW_BAKE=1
@@ -36,6 +36,7 @@ import json
 import secrets
 import shutil
 import threading
+import time
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
@@ -49,12 +50,14 @@ except ImportError as exc:  # pragma: no cover
 
 import structlog
 from argus_cortex.server import WriteGuard
+from argus_cortex.service import DependencyCheck, install_health
 from pydantic import BaseModel, Field, field_validator
 
 from argus_atlas import __version__, config, gdal_ops, gpu
 from argus_atlas.backends.base import BackendError, BakeBackend
 from argus_atlas.jobs import JobStore, is_safe_id, new_job_id
 from argus_atlas.models import (
+    ATLAS_VERSION,
     DEFAULT_LORA_WEIGHT,
     SIDECAR_NAME,
     Z_FACTOR_AUTO,
@@ -76,6 +79,7 @@ _BAKE_REFUSAL = "live baking is disabled on this host (set ATLAS_ALLOW_BAKE=1 to
 _OSM_REFUSAL = "fetching OSM from the server is disabled on this host (set ATLAS_ALLOW_OSM=1 to enable POST /osm)"
 _DELETE_REFUSAL = "deleting jobs is disabled on this host (set ATLAS_ALLOW_DELETE=1 to enable POST /purge)"
 PURGE_CONFIRM = {"confirm": "purge"}
+_GDAL_TTL_S = 30.0
 INPUT_DEM_SUFFIXES = (".tif", ".tiff", ".vrt")
 INPUT_VECTOR_SUFFIXES = (".geojson", ".gpkg", ".shp", ".fgb")
 
@@ -277,20 +281,50 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"{label} {name!r} not found under {dem_root}")
         return path
 
-    @app.get("/health")
-    async def health() -> dict:
-        """Liveness + capability probe. ``read_only`` is ``True`` when live baking
-        is disabled; ``gdal`` is the GDAL version or ``null`` when it is missing."""
+    # `gdalinfo --version` is a subprocess: asked at most once per _GDAL_TTL_S, so /health only reads state.
+    gdal_seen: list = [0.0, None, False]  # monotonic time, version, asked yet
+    gdal_lock = threading.Lock()
+
+    def _gdal() -> str | None:
+        with gdal_lock:
+            if not gdal_seen[2] or time.monotonic() - gdal_seen[0] > _GDAL_TTL_S:
+                gdal_seen[:] = [time.monotonic(), gdal_ops.gdal_version(), True]
+            return gdal_seen[1]
+
+    def _check_gdal() -> DependencyCheck:
+        version = _gdal()
+        return DependencyCheck(ok=version is not None, detail=version or "gdalinfo is missing or broken")
+
+    def _check_comfyui() -> DependencyCheck:
+        # The version only: /health is unauthenticated, so never the ComfyUI address (GET /doctor has the detail).
+        status = _backend().probe()
+        return DependencyCheck(ok=status.reachable, detail=status.version if status.reachable else "unreachable")
+
+    def _health_extra() -> dict:
         return {
-            "status": "ok",
-            "service": "argus-atlas",
-            "version": __version__,
             "commit": generator().commit,
-            "read_only": not allow_bake,
             "osm_allowed": allow_osm,
             "delete_allowed": allow_delete,
-            "gdal": gdal_ops.gdal_version(),
+            "gdal": _gdal(),
         }
+
+    # Liveness + capability probe, in cortex's ServiceHealth shape (argus-cortex 0.16) with atlas's own fields beside
+    # it. `read_only` is True when live baking is disabled; `gdal` is the GDAL version or null when it is missing,
+    # which also makes `status` "degraded" (still HTTP 200). The backend is checked only where baking is allowed and
+    # never degrades the service: with a GPU broker the grant may name another ComfyUI. `?checks=0` skips both.
+    health_checks = {"gdal": _check_gdal}
+    if allow_bake:
+        health_checks["comfyui"] = _check_comfyui
+    install_health(
+        app,
+        service="argus-atlas",
+        version=__version__,
+        wire={"atlas_version": ATLAS_VERSION},
+        checks=health_checks,
+        informational=["comfyui"] if allow_bake else [],
+        read_only=not allow_bake,
+        extra=_health_extra,
+    )
 
     @app.get("/presets")
     async def presets() -> dict:

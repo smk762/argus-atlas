@@ -54,8 +54,11 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "ATLAS_BACKEND",
         "ATLAS_CORS_ORIGINS",
         "COMFYUI_BASE_URL",
+        "ARGUS_COMFYUI_URL",
     ):
         monkeypatch.delenv(name, raising=False)
+    # A developer's suite file (~/.config/argus/suite.env) is never read by the tests.
+    monkeypatch.setenv("ARGUS_ENV_FILE", "off")
 
 
 def _skip_without_gdal() -> None:

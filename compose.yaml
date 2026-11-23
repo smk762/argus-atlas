@@ -6,6 +6,10 @@
 #   docker compose --profile test run --rm test           # the suite against real GDAL
 #   docker compose build                                  # after a pull: run/up never rebuild an existing image
 #
+# Settings every Argus service on the host shares (the GPU broker's URL and token, ARGUS_COMFYUI_URL) can live in
+# the suite file, ~/.config/argus/suite.env (mode 600), instead of .env. Compose has no optional bind mount, so the
+# mount is its own file, compose.suite.yaml: add it only on a host that has the suite file (see that file).
+#
 # ComfyUI is not managed here: it runs on the GPU host and is reached by URL. argus-studio
 # deploys atlas through its own compose (`--profile atlas`); this file is for operators and dev.
 # Paths given to the CLI are container paths: /data/dem, /data/recipes, /data/models, /data/out/atlas.
@@ -23,7 +27,8 @@ x-atlas: &atlas
     - host.docker.internal:host-gateway
   environment:
     HOME: /tmp
-    # Unset or empty means argus_atlas.config's default (comfyui, host.docker.internal:8188, ...).
+    # Unset or empty means argus_atlas.config's default (comfyui, host.docker.internal:8188, ...). An empty
+    # COMFYUI_BASE_URL or ARGUS_GPU_BROKER_* also falls through to the suite file when it is mounted.
     ATLAS_BACKEND: ${ATLAS_BACKEND:-}
     COMFYUI_BASE_URL: ${COMFYUI_BASE_URL:-}
     ATLAS_WORKFLOW: ${ATLAS_WORKFLOW:-}  # a container path, e.g. under /data/models
@@ -70,8 +75,15 @@ services:
     ports:
       - ${ATLAS_BIND:-127.0.0.1}:${ATLAS_PORT:-8105}:8105
     restart: unless-stopped
+    # How the suite finds this service: argus-iris's agents read the labels and build its directory from them.
+    labels:
+      argus.peer: atlas
+      argus.service: argus-atlas
+      argus.health: /health
+      argus.port: "8105"
     healthcheck:
-      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8105/health', timeout=3)"]
+      # checks=0: liveness only, without asking GDAL or ComfyUI.
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8105/health?checks=0', timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3

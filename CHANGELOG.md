@@ -4,9 +4,17 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 
 ## [Unreleased]
 
+## [0.5.0rc1] - 2026-11-23
+
 ### Changed
 
 - **The docs opsec gate no longer names the suite's machines in its own source**: `tests/test_rules.py` reads the private names only from `OPSEC_DENYLIST` (the environment, the Actions secret of the same name, or an untracked `.opsec-denylist` file), matched as whole words, case-insensitively. Unconfigured, the name check is skipped with one notice; the IP, path and email checks always run.
+- **argus-cortex 0.8 → 0.14** (#78), pinned `>=0.14,<0.15`. Hashing and timestamps use cortex's `sha256_hex` and `utc_now_iso`.
+- **Tooling synced with argus-pkg-template `44d4288`**: the Suite check also runs on `dev`, CI and Suite workflows default to read-only `contents`, and `tests/test_workflows.py` holds every workflow Python to `requires-python` and checks the GitHub Release job. The template's cortex-dispatch image rebuild is not adopted: the image installs from `uv.lock`, so a rebuild would not pick up a new cortex.
+
+### Fixed
+
+- **Audit findings** (#74, #79). A seam rebuild drops the deleted seam controls from `job.json` at once, and every `job.json` write holds a per-job `flock` (`.job.lock`), which `label_job` keeps from re-read to save. The server re-checks a controls id once claimed, re-reads a job under its bake claim (404 if purged in the gap) and claims before tiling. Geographic detection and the linear unit come from the horizontal CRS (compound and bound CRSs included) through a small WKT parser; WKT nested past 64 levels is unparseable rather than a `RecursionError`. `gdalinfo` runs with `GDAL_PAM_ENABLED=NO`, so `-stats` neither writes nor reuses `.aux.xml`. AAIGrid headers accept the known keywords only, and `nan`/`inf` cells read as no land. A vanishing `--resolution` is an `AtlasError`; `.` and `./` model names are `FileNotFoundError` under Python 3.13; a recipe name is never `expanduser()`'d; out-of-line EXIF values are padded to even offsets; early validation failures end the progress stream with an error frame. `scripts/fetch_civitai_lora.py` drops the token on a scheme or port change, and a failed download or metadata lookup fails that model while the batch runs on, exiting non-zero at the end.
 
 ## [0.4.1] - 2026-11-20
 

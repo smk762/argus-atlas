@@ -19,6 +19,7 @@ import importlib.resources
 import json
 from pathlib import Path
 
+from argus_cortex.hashing import sha256_hex
 from pydantic import ValidationError
 
 from argus_atlas.backends.workflow import (
@@ -26,7 +27,6 @@ from argus_atlas.backends.workflow import (
     EXAMPLE_TEMPLATE_SEAM_NOLORA,
     PACKAGED_TEMPLATES,
 )
-from argus_atlas.hashing import sha256_bytes
 from argus_atlas.jobs import is_safe_id
 from argus_atlas.models import AtlasError, BakeParams, Recipe, RecipeRecord, ZFactor
 from argus_atlas.presets import get_preset, resolve_params
@@ -50,7 +50,7 @@ def recipe_digest(recipe: Recipe) -> str:
         if fields.get(key) == legacy:
             del fields[key]
     canonical = json.dumps(fields, sort_keys=True, separators=(",", ":"))
-    return sha256_bytes(canonical.encode("utf-8"))
+    return sha256_hex(canonical.encode("utf-8"))
 
 
 def with_relief(recipe: Recipe, z_factor: ZFactor | None = None, vertical_exaggeration: float | None = None) -> Recipe:

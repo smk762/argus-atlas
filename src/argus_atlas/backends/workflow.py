@@ -27,8 +27,9 @@ import importlib.resources
 import json
 from pathlib import Path
 
+from argus_cortex.hashing import sha256_hex
+
 from argus_atlas.backends.base import BackendError
-from argus_atlas.hashing import sha256_bytes
 
 EXAMPLE_TEMPLATE = "comfyui_sdxl_img2img_control.json"
 # Same graph without the LoraLoader, for a first bake before a cartography LoRA exists.
@@ -99,7 +100,7 @@ def example_template(name: str = EXAMPLE_TEMPLATE) -> dict:
 
 def template_digest(template: dict) -> str:
     """A stable SHA256 of the template, recorded in the bake record."""
-    return sha256_bytes(json.dumps(template, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    return sha256_hex(json.dumps(template, sort_keys=True, separators=(",", ":")).encode("utf-8"))
 
 
 def placeholders_used(template: dict) -> set[str]:

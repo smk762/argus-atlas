@@ -7,6 +7,8 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 ### Changed
 
 - **The docs opsec gate no longer names the suite's machines in its own source**: `tests/test_rules.py` reads the private names only from `OPSEC_DENYLIST` (the environment, the Actions secret of the same name, or an untracked `.opsec-denylist` file), matched as whole words, case-insensitively. Unconfigured, the name check is skipped with one notice; the IP, path and email checks always run.
+- **argus-cortex 0.8 → 0.14** (#78), pinned `>=0.14,<0.15`. Hashing and timestamps use cortex's `sha256_hex` and `utc_now_iso`.
+- **Tooling synced with argus-pkg-template `44d4288`**: the Suite check also runs on `dev`, CI and Suite workflows default to read-only `contents`, and `tests/test_workflows.py` holds every workflow Python to `requires-python` and checks the GitHub Release job. The template's cortex-dispatch image rebuild is not adopted: the image installs from `uv.lock`, so a rebuild would not pick up a new cortex.
 
 ## [0.4.1] - 2026-11-20
 

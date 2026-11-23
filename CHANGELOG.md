@@ -4,6 +4,14 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 
 ## [Unreleased]
 
+### Changed
+
+- **argus-cortex 0.14 → 0.15**, pinned `>=0.15,<0.16`. `ARGUS_GPU_BROKER_URL` (and `ARGUS_GPU_BROKER_TOKEN`) is all the GPU broker needs: cortex selects the broker from the URL alone and finds `gpu-tenant.yaml` in the working directory or at `/app/gpu-tenant.yaml`, where the image ships it. Compose, `.env.example` and the README drop `ARGUS_GPU_COORDINATOR`, `ARGUS_GPU_TENANT` and `ARGUS_GPU_TENANT_MANIFEST`. **Behaviour change:** a host that set `ARGUS_GPU_BROKER_URL` without `ARGUS_GPU_COORDINATOR` now leases from the broker; set `ARGUS_GPU_COORDINATOR=none` to keep baking ungated.
+
+### Added
+
+- **`argus-atlas serve` registers with the GPU broker at startup** (`gpu.keep_registered`, in the app's lifespan), re-registers every five minutes and signs off at shutdown, so argus-iris knows the tenant before its first bake. It never blocks startup: a down broker or an unusable `ARGUS_GPU_*` environment is logged and left to `doctor` and the bake. The CLI still registers with its first lease.
+
 ## [0.5.0] - 2026-11-23
 
 ### Changed

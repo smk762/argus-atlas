@@ -479,7 +479,8 @@ def chunk(
         _fail(f"refusing to bake: set {config.ENV_ALLOW_BAKE}=1 (or pass --controls-only)", EXIT_REFUSED)
 
     from argus_atlas import gdal_ops
-    from argus_atlas.chunks import chunk_job_id, parse_tile, run_chunk, validate_chunk, validate_seams
+    from argus_atlas.chunk_pipeline import run_chunk
+    from argus_atlas.chunks import chunk_job_id, parse_tile, validate_chunk, validate_seams
     from argus_atlas.controls import check_inputs
     from argus_atlas.jobs import require_safe_id
     from argus_atlas.recipes import load_recipe, recipe_record, recipe_workflow, with_relief

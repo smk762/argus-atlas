@@ -10,6 +10,7 @@ import pytest
 from argus_atlas import gdal_ops
 from argus_atlas.backends.base import BackendError
 from argus_atlas.bake import run_bake
+from argus_atlas.chunk_pipeline import run_chunk
 from argus_atlas.chunks import (
     CHUNK_TIF,
     RESIDUAL_LIMIT,
@@ -20,7 +21,6 @@ from argus_atlas.chunks import (
     find_neighbours,
     neighbour_tiles,
     parse_tile,
-    run_chunk,
     validate_seams,
 )
 from argus_atlas.georef import AlignmentError

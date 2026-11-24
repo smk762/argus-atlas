@@ -7,7 +7,8 @@ import pytest
 from typer.testing import CliRunner
 
 from argus_atlas import mosaic as mosaic_mod
-from argus_atlas.chunks import chunk_job_id, parse_tile, run_chunk
+from argus_atlas.chunk_pipeline import run_chunk
+from argus_atlas.chunks import chunk_job_id, parse_tile
 from argus_atlas.cli import app
 from argus_atlas.gdal_ops import gdalinfo_json
 from argus_atlas.jobs import load_sidecar, save_sidecar

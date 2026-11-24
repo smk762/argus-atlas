@@ -116,7 +116,8 @@ def _archive_metadata(path: Path) -> dict:
 @requires_gdal
 def test_tiles_and_mosaic_carry_copernicus_and_osm_attribution(dem: Path, tmp_path: Path, models_dir: Path) -> None:
     """A chunk block built from a Copernicus DEM and an OSM layer, labelled from Natural Earth, then mosaicked."""
-    from argus_atlas.chunks import chunk_job_id, parse_tile, run_chunk
+    from argus_atlas.chunk_pipeline import run_chunk
+    from argus_atlas.chunks import chunk_job_id, parse_tile
     from argus_atlas.cli import app
     from argus_atlas.jobs import load_sidecar
     from argus_atlas.labels import label_job

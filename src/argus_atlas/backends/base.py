@@ -16,12 +16,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from argus_atlas.errors import BackendError as BackendError
 from argus_atlas.hashing import sha256_cached
-from argus_atlas.models import AtlasError, BakeParams, Grid, ModelRef
-
-
-class BackendError(AtlasError):
-    """A generation failure: engine unreachable, bad workflow, missing model, wrong-size output."""
+from argus_atlas.models import BakeParams, Grid, ModelRef
 
 
 @dataclass

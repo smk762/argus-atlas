@@ -15,7 +15,8 @@ from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from argus_atlas import gdal_ops
-from argus_atlas.chunks import find_neighbours, run_chunk
+from argus_atlas.chunk_pipeline import run_chunk
+from argus_atlas.chunks import find_neighbours
 from argus_atlas.cli import app
 from argus_atlas.controls import build_controls, plan_grid, resolve_relief
 from argus_atlas.jobs import load_sidecar, save_sidecar

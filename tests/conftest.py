@@ -59,6 +59,9 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
     # A developer's suite file (~/.config/argus/suite.env) is never read by the tests.
     monkeypatch.setenv("ARGUS_ENV_FILE", "off")
+    # A closed local port: the default (host.docker.internal) hangs where the host drops the packets, and is a real
+    # ComfyUI where it doesn't.
+    monkeypatch.setattr("argus_atlas.config.DEFAULT_COMFYUI_URL", "http://127.0.0.1:9")
 
 
 def _skip_without_gdal() -> None:

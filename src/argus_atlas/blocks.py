@@ -325,7 +325,8 @@ def run_block(
     Done chunks are skipped with *controls_only* too: rebuilding their controls would
     replace the sidecar that publishes their crop to the neighbours.
     """
-    from argus_atlas.chunks import parse_tile, run_chunk
+    from argus_atlas.chunk_pipeline import run_chunk
+    from argus_atlas.chunks import parse_tile
     from argus_atlas.labels import label_job
 
     todo = plan.todo

@@ -19,7 +19,7 @@ first bake; the CLI registers with its first lease.
 
 :data:`BAKE` is the figure declared in ``gpu-tenant.yaml``; ``tests/test_gpu.py`` keeps the two in step. The broker
 uses its learned p95 per kind when that is larger. A refused or timed-out lease, or a broker error, is a
-:class:`~argus_atlas.backends.base.BackendError` that says so (:func:`lease_failure`). Nothing retries it.
+:class:`~argus_atlas.errors.BackendError` that says so (:func:`lease_failure`). Nothing retries it.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from argus_cortex.gpu import GpuCoordinator, GpuLease, GpuLeaseRefused, GpuLease
 from argus_cortex.gpu_broker import BrokerError
 from argus_cortex.gpu_wire import GpuConstraints, PriorityClass
 
-from argus_atlas.backends.base import BackendError
+from argus_atlas.errors import BackendError
 
 TENANT = "argus-atlas"
 TARGET_COMFYUI = "comfyui"

@@ -25,7 +25,15 @@ from argus_atlas.georef import FANTASY_PNG, FANTASY_TIF, AlignmentError, stamp
 from argus_atlas.hashing import sha256_file
 from argus_atlas.jobs import CONTROL_STAGES, load_sidecar, save_sidecar
 from argus_atlas.metadata import bake_payload, embed_png, payload_json
-from argus_atlas.models import AtlasError, BakeParams, BakeRecord, FileRef, JobSidecar, ProgressEvent
+from argus_atlas.models import (
+    AtlasError,
+    BakeParams,
+    BakeRecord,
+    FileRef,
+    GdalCommand,
+    JobSidecar,
+    ProgressEvent,
+)
 from argus_atlas.provenance import generator
 
 logger = structlog.get_logger()
@@ -53,6 +61,23 @@ def verify_controls(job_dir: Path, sidecar: JobSidecar) -> dict[str, Path]:
     return controls
 
 
+def without_bake_commands(commands: list[GdalCommand]) -> list[GdalCommand]:
+    """*commands* less a chunk bake's blend and crop: the ones reading or writing the painted canvas
+    (``fantasy.tif``), its seam blend, the crop's temp file or the blend's ``.blend-*`` scratch dir.
+
+    The control and seam stages never touch those (seams read the neighbours' published crops), so what is
+    left is what the controls recorded, plus labels.
+    """
+    from argus_atlas.chunks import BLEND_TIF, CHUNK_TIF
+
+    names = {FANTASY_TIF, BLEND_TIF, f".{CHUNK_TIF}.part"}
+
+    def from_a_bake(command: GdalCommand) -> bool:
+        return any(Path(arg).name in names or Path(arg).parent.name.startswith(".blend-") for arg in command.argv)
+
+    return [c for c in commands if not from_a_bake(c)]
+
+
 def run_bake(
     job_dir: Path,
     params: BakeParams,
@@ -72,8 +97,10 @@ def run_bake(
         # Painted from other params (`bake`, POST /bake/stream): not that recipe's chunk any more, so
         # neither job.json, the embedded payload nor find_neighbours may claim it is.
         sidecar.recipe = None
-    # A new bake replaces the timings of the last one; the control stages stay.
+    # A new bake replaces the timings of the last one; the control stages stay. So do its commands: a chunk's
+    # blend and crop are appended below, so the last bake's are dropped first.
     timings = {k: v for k, v in sidecar.timings.items() if k in CONTROL_STAGES}
+    sidecar.commands = without_bake_commands(sidecar.commands)
     clock = [time.perf_counter()]
 
     def lap(stage: str) -> None:

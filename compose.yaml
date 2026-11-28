@@ -63,7 +63,7 @@ x-atlas: &atlas
     - {type: bind, source: "${ATLAS_JOBS_HOST:-./data/jobs}", target: /data/out/atlas, bind: {create_host_path: false}}
 
 services:
-  atlas:
+  atlas:  # nosemgrep: service-peer-label  one-shot CLI (`compose run --rm atlas`, profile cli), serves nothing
     <<: *atlas
     profiles: [cli]  # one-shot: `docker compose run --rm atlas <command>`; never started by `up`
     entrypoint: [argus-atlas]
@@ -90,7 +90,7 @@ services:
       start_period: 20s
       start_interval: 2s
 
-  test:
+  test:  # nosemgrep: service-peer-label  test container (profile test): runs pytest against real GDAL, then exits
     image: argus-atlas:test
     build:
       context: .

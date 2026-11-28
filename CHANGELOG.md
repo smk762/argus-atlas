@@ -6,6 +6,7 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 
 ### Changed
 
+- `compose.yaml`: `serve` sets `ARGUS_PEER=atlas`, so `GET /health` reports the peer its `argus.peer` label names (it was `null`).
 - **argus-cortex 0.14 → 0.16**, pinned `>=0.16,<0.17`. `ARGUS_GPU_BROKER_URL` (and `ARGUS_GPU_BROKER_TOKEN`) is all the GPU broker needs: cortex selects the broker from the URL alone and finds `gpu-tenant.yaml` in the working directory or at `/app/gpu-tenant.yaml`, where the image ships it. Compose, `.env.example` and the README drop `ARGUS_GPU_COORDINATOR`, `ARGUS_GPU_TENANT` and `ARGUS_GPU_TENANT_MANIFEST`. **Behaviour change:** a host that set `ARGUS_GPU_BROKER_URL` without `ARGUS_GPU_COORDINATOR` now leases from the broker; set `ARGUS_GPU_COORDINATOR=none` to keep baking ungated. `.env.example` no longer lists `ARGUS_GPU_BROKER_FALLBACK` (it still works).
 
 ### Added

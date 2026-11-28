@@ -25,7 +25,7 @@ x-atlas: &atlas
   user: "${UID:-1000}:${GID:-1000}"
   extra_hosts:
     - host.docker.internal:host-gateway
-  environment:
+  environment: &atlas-env
     HOME: /tmp
     # Unset or empty means argus_atlas.config's default (comfyui, host.docker.internal:8188, ...). An empty
     # COMFYUI_BASE_URL or ARGUS_GPU_BROKER_* also falls through to the suite file when it is mounted.
@@ -72,6 +72,10 @@ services:
   serve:
     <<: *atlas
     command: [argus-atlas, serve, --port, "8105", --cors]
+    environment:
+      <<: *atlas-env
+      # The peer label below, reported back in GET /health: a process cannot read its own labels.
+      ARGUS_PEER: atlas
     ports:
       - ${ATLAS_BIND:-127.0.0.1}:${ATLAS_PORT:-8105}:8105
     restart: unless-stopped

@@ -406,6 +406,19 @@ def test_blend_closes_the_seam_and_keeps_the_painted_canvas(dem: Path, tmp_path:
 
 
 @requires_gdal
+def test_a_rebake_records_only_its_own_blend_and_crop_commands(dem: Path, tmp_path: Path, models_dir: Path) -> None:
+    # Re-baking a chunk (POST /bake/stream on the same job) used to append its blend and crop commands to the last
+    # bake's, so job.json described steps for images that no longer exist (audit pack-argus-atlas-bd98b9bbfd).
+    _chunk(dem, tmp_path, A, models_dir)
+    b = _chunk(dem, tmp_path, B, models_dir)
+    assert b.chunk is not None and b.chunk.blend is not None and b.bake is not None
+    job_dir = tmp_path / b.job_id
+    again = run_bake(job_dir, b.bake.params, FakeBackend(), models_root=models_dir)
+    assert len(again.commands) == len(b.commands)
+    assert [c.tool for c in again.commands] == [c.tool for c in b.commands]
+
+
+@requires_gdal
 def test_seams_work_from_a_read_only_working_directory(
     dem: Path, tmp_path: Path, models_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

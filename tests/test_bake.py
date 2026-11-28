@@ -183,3 +183,30 @@ def test_model_resolver_follows_a_symlink_the_operator_placed_under_the_root(tmp
     for escape in ("../fast/juggernaut.safetensors", str(store / "juggernaut.safetensors"), ".", "./", "loras/."):
         with pytest.raises(FileNotFoundError):
             resolve(escape)
+
+
+def test_a_rebake_drops_only_the_last_bakes_blend_and_crop_commands(tmp_path: Path) -> None:
+    """Control, seam and label commands stay; a chunk bake's blend and crop go, so a re-bake records its own
+    instead of stacking on the last one's (audit pack-argus-atlas-bd98b9bbfd)."""
+    from argus_atlas.bake import without_bake_commands
+    from argus_atlas.models import GdalCommand
+
+    job = tmp_path / "antique-14-8650-5890"
+    other = tmp_path / "antique-14-8651-5890"
+    control = GdalCommand(tool="gdaldem", argv=["gdaldem", "hillshade", str(job / "dem.tif"), str(job / "hill.tif")])
+    seam = GdalCommand(
+        tool="gdal_translate", argv=["gdal_translate", str(other / "fantasy_chunk.tif"), str(job / "seam_init.tif")]
+    )
+    blend_in = GdalCommand(
+        tool="gdal_calc.py", argv=["gdal_calc.py", "-R", str(job / "fantasy.tif"), "--outfile", "k.tif"]
+    )
+    blend_work = GdalCommand(
+        tool="gdal_proximity.py", argv=["gdal_proximity.py", str(job / ".blend-x1" / "kept.tif"), "to_kept.tif"]
+    )
+    crop = GdalCommand(
+        tool="gdal_translate",
+        argv=["gdal_translate", "-srcwin", "32", str(job / "fantasy_blend.tif"), str(job / ".fantasy_chunk.tif.part")],
+    )
+    kept = [control, seam]
+    assert without_bake_commands([control, blend_in, seam, blend_work, crop]) == kept
+    assert without_bake_commands(kept) == kept

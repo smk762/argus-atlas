@@ -16,6 +16,10 @@ All notable changes to `argus-atlas` are recorded here. The format follows Keep 
 - The `serve` container carries the discovery labels `argus.peer: atlas`, `argus.service: argus-atlas`, `argus.health: /health` and `argus.port: "8105"`, which argus-iris's agents read.
 - **`argus-atlas serve` registers with the GPU broker at startup** (`gpu.keep_registered`, in the app's lifespan), re-registers every five minutes and signs off at shutdown, so argus-iris knows the tenant before its first bake. It never blocks startup: a down broker or an unusable `ARGUS_GPU_*` environment is logged and left to `doctor` and the bake. The CLI still registers with its first lease.
 
+### Fixed
+
+- **A re-bake no longer stacks its blend and crop commands on the last bake's** in `job.json`'s `commands`. Like the timings, a new bake drops the previous bake's blend and crop commands and records its own; the control, seam and label commands stay.
+
 ## [0.5.0] - 2026-11-23
 
 ### Changed

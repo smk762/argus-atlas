@@ -472,13 +472,16 @@ def _purge_on_first_load(monkeypatch: pytest.MonkeyPatch, c: TestClient) -> list
 
     real_load = JobStore.load
     purges: list[int] = []
+    started = threading.Event()  # set before the purge runs, so a load inside the purge itself starts no other
 
     def load(self: JobStore, job_id: str) -> JobSidecar:
         sidecar = real_load(self, job_id)
-        if not purges:
+        if not started.is_set():
+            started.set()
             t = threading.Thread(target=lambda: purges.append(c.post(f"/purge/{job_id}", json=CONFIRM).status_code))
             t.start()
             t.join(10)
+            assert not t.is_alive(), "the purge did not finish: the interleaving under test never happened"
         return sidecar
 
     monkeypatch.setattr(JobStore, "load", load)
